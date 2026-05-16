@@ -1,0 +1,28 @@
+[package]
+name = "wt"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jane Brent"]
+description = "Terminal dashboard for git worktrees and Claude Code sessions"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[[bin]]
+name = "wt"
+path = "src/main.rs"
