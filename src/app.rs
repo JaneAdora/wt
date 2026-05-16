@@ -31,7 +31,11 @@ pub enum TickMsg {
 pub enum InputMode {
     Normal,
     Search(String),
-    Modal(Vec<crate::git::LogEntry>, String),
+    Modal {
+        entries: Vec<crate::git::LogEntry>,
+        title: String,
+        scroll: u16,
+    },
 }
 
 pub struct UiState {
@@ -180,9 +184,11 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
     crate::ui::sessions::render(f, chunks[1], state);
     render_footer(f, chunks[2], state, cols, ui);
 
-    if let InputMode::Modal(log, title) = &ui.mode {
-        let modal_area = centered_rect(area, 60, 60);
-        crate::ui::modal::render(f, modal_area, log, title);
+    if let InputMode::Modal { entries, title, scroll } = &ui.mode {
+        // Near-full-screen modal. Better for narrow phone widths and
+        // gives commit subjects room to wrap legibly.
+        let modal_area = centered_rect(area, 94, 90);
+        crate::ui::modal::render(f, modal_area, entries, title, *scroll);
     }
 }
 
@@ -196,14 +202,23 @@ fn render_footer(
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
 
-    if let InputMode::Search(buf) = &ui.mode {
-        f.render_widget(
-            Paragraph::new(format!("/ {buf}_  (Enter to apply, Esc to cancel)")),
-            area,
-        );
-        return;
+    match &ui.mode {
+        InputMode::Search(buf) => {
+            f.render_widget(
+                Paragraph::new(format!("/ {buf}_  Enter apply · Esc cancel")),
+                area,
+            );
+            return;
+        }
+        InputMode::Modal { .. } => {
+            // Modal has its own footer hint in title_bottom; leave the
+            // screen-bottom strip blank so we don't double up.
+            return;
+        }
+        InputMode::Normal => {}
     }
-    let mut bits = vec![Span::raw("↑↓ ↵ Tab c o r / a g q")];
+
+    let mut bits = vec![Span::raw("↑↓/jk move · Tab switch · ↵ open · c copy · o exit · r refresh · / filter · a active · g log · q quit")];
     if cols.too_narrow {
         bits.push(Span::raw("  "));
         bits.push(Span::styled("narrow", crate::ui::theme::status_line()));
@@ -269,9 +284,37 @@ fn handle_key(
             }
             return Ok(None);
         }
-        InputMode::Modal(_, _) => {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
-                ui.mode = InputMode::Normal;
+        InputMode::Modal { entries, scroll, .. } => {
+            let total = entries.len() as u16 * 2; // 2 lines per entry; wraps add more
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                    ui.mode = InputMode::Normal;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    *scroll = scroll.saturating_add(1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    *scroll = scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    *scroll = scroll.saturating_add(10).min(total.saturating_sub(1));
+                }
+                KeyCode::PageUp | KeyCode::Char('b') => {
+                    *scroll = scroll.saturating_sub(10);
+                }
+                KeyCode::Char('g') => {
+                    *scroll = 0;
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    *scroll = total.saturating_sub(1);
+                }
+                KeyCode::Home => {
+                    *scroll = 0;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(Some(RunOutcome::Quit));
+                }
+                _ => {}
             }
             return Ok(None);
         }
@@ -319,7 +362,11 @@ fn handle_key(
                     .and_then(|s| s.to_str())
                     .unwrap_or("?")
                     .to_string();
-                ui.mode = InputMode::Modal(entries, title);
+                ui.mode = InputMode::Modal {
+                    entries,
+                    title,
+                    scroll: 0,
+                };
             }
             Ok(None)
         }

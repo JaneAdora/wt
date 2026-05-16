@@ -11,14 +11,21 @@ use ratatui::{
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
     let focused = state.focus == Pane::Worktrees;
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        "WORKTREES",
-        if focused {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
             theme::pane_header_focused()
         } else {
-            theme::pane_header()
-        },
-    ));
+            Style::default()
+        })
+        .title(Span::styled(
+            "WORKTREES",
+            if focused {
+                theme::pane_header_focused()
+            } else {
+                theme::pane_header()
+            },
+        ));
 
     let mut items: Vec<ListItem> = Vec::new();
     for p in &state.projects {

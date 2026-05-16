@@ -9,16 +9,24 @@ use ratatui::{
 use std::time::{Duration, SystemTime};
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
+    use ratatui::style::Style;
     let focused = state.focus == Pane::Sessions;
     let header = current_worktree_label(state).unwrap_or_else(|| "(no selection)".to_string());
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        format!("SESSIONS · {header}"),
-        if focused {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
             theme::pane_header_focused()
         } else {
-            theme::pane_header()
-        },
-    ));
+            Style::default()
+        })
+        .title(Span::styled(
+            format!("SESSIONS · {header}"),
+            if focused {
+                theme::pane_header_focused()
+            } else {
+                theme::pane_header()
+            },
+        ));
 
     // Block borders consume 2 cols (1 each side); reserve a 1-col safety margin
     // for terminals that quirk on the last column.
