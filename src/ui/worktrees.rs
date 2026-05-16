@@ -18,9 +18,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
         .iter()
         .filter(|p| project_has_visible_worktrees(p, state))
         .collect();
-    let total_wts: usize = visible_projects
+    let visible_wts: usize = visible_projects
         .iter()
         .map(|p| p.worktrees.iter().filter(|w| worktree_visible(w, state)).count())
+        .sum();
+    let absolute_total_wts: usize = state
+        .projects
+        .iter()
+        .map(|p| p.worktrees.len())
         .sum();
     let total_active_sessions: usize = visible_projects
         .iter()
@@ -28,10 +33,20 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
         .map(|w| w.sessions.len())
         .sum();
 
-    let title = format!(
-        "WORKTREES ({} wt · {} sess)",
-        total_wts, total_active_sessions
-    );
+    let title = if visible_wts < absolute_total_wts {
+        format!(
+            "WORKTREES ({} of {} wt · {} sess) · filter: {}",
+            visible_wts,
+            absolute_total_wts,
+            total_active_sessions,
+            filter_label(state),
+        )
+    } else {
+        format!(
+            "WORKTREES ({} wt · {} sess)",
+            visible_wts, total_active_sessions
+        )
+    };
     let title_style = if focused {
         theme::pane_header_focused()
     } else {
@@ -58,6 +73,11 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
     for p in &visible_projects {
         let expanded = state.expanded.contains(&p.name);
         let marker = if expanded { "▼" } else { "▸" };
+        let visible_wt_count = p
+            .worktrees
+            .iter()
+            .filter(|w| worktree_visible(w, state))
+            .count();
         let active = p
             .worktrees
             .iter()
@@ -70,9 +90,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
             .filter(|w| worktree_visible(w, state) && w.dirty)
             .count();
 
-        // Compose count_label with up to three pieces: worktree count,
-        // session count, dirty count. Keep it short.
-        let mut parts = vec![p.worktrees.len().to_string()];
+        // Compose count_label. Show "(visible of total)" only when some
+        // are hidden by the filter; otherwise the plain count.
+        let wt_count_part = if visible_wt_count < p.worktrees.len() {
+            format!("{} of {}", visible_wt_count, p.worktrees.len())
+        } else {
+            p.worktrees.len().to_string()
+        };
+        let mut parts = vec![wt_count_part];
         if active > 0 {
             parts.push(format!("{active} sess"));
         }
@@ -236,6 +261,13 @@ fn worktree_visible(wt: &Worktree, state: &AppState) -> bool {
         return true;
     }
     is_active(wt)
+}
+
+fn filter_label(state: &AppState) -> &'static str {
+    match state.filter {
+        ActiveFilter::ActiveOnly => "active",
+        ActiveFilter::All => "all",
+    }
 }
 
 pub fn is_active(wt: &Worktree) -> bool {
