@@ -983,7 +983,7 @@ git commit -m "feat(discovery): scan ~/projects/ for git dirs and enrich status"
 
 ## Task 7: `sessions::scan_jobs`
 
-> **Note:** the exact JSON field names below are placeholders. **Replace them with whatever Task 1 recorded in `docs/notes/format-findings.md` before writing the test.** The structure of this task does not change; only the deserialize struct field names do.
+> **Field names verified against real data in `docs/notes/format-findings.md`.** The metadata file is `state.json`, the cwd-equivalent canonical key is `worktreePath` (with `cwd` as fallback), and the `state` enum values are `done`/`working`/`blocked` (not `running`/`completed`/`failed`).
 
 **Files:**
 - Create: `src/sessions.rs`
@@ -1000,27 +1000,38 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Field names per `docs/notes/format-findings.md`. Update if Task 1
-/// recorded different names.
+/// Field names per `docs/notes/format-findings.md` (verified against real state.json).
 #[derive(Debug, Deserialize)]
 struct JobMetadata {
-    #[serde(alias = "cwd", alias = "working_directory")]
+    /// Canonical worktree path. Prefer over `cwd` when set.
+    #[serde(default, rename = "worktreePath")]
+    worktree_path: Option<PathBuf>,
+    /// Shell cwd at spawn. Fallback if `worktreePath` is null.
     cwd: PathBuf,
     #[serde(default)]
-    status: Option<String>,
-    #[serde(alias = "created_at", alias = "createdAt", default)]
-    created_at: Option<String>,
+    state: Option<String>,
+    #[serde(default, rename = "inFlight")]
+    in_flight: Option<bool>,
+    #[serde(default, rename = "updatedAt")]
+    updated_at: Option<String>,
+}
+
+impl JobMetadata {
+    fn effective_cwd(&self) -> PathBuf {
+        self.worktree_path.clone().unwrap_or_else(|| self.cwd.clone())
+    }
 }
 
 pub fn scan_jobs(jobs_dir: &Path) -> Result<Vec<Session>> {
     todo!()
 }
 
-fn parse_status(s: Option<&str>) -> JobStatus {
-    match s {
-        Some("running") | Some("in_progress") => JobStatus::Running,
-        Some("completed") | Some("done") | Some("success") => JobStatus::Completed,
-        Some("failed") | Some("error") => JobStatus::Failed,
+fn parse_status(state: Option<&str>, in_flight: Option<bool>) -> JobStatus {
+    if in_flight == Some(true) { return JobStatus::Running; }
+    match state {
+        Some("working") | Some("running") | Some("in_progress") => JobStatus::Running,
+        Some("done") | Some("completed") | Some("success") => JobStatus::Completed,
+        Some("blocked") | Some("failed") | Some("error") | Some("cancelled") => JobStatus::Failed,
         _ => JobStatus::Unknown,
     }
 }
@@ -1033,32 +1044,45 @@ mod tests {
     fn write_job(parent: &Path, id: &str, json: &str) {
         let dir = parent.join(id);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("metadata.json"), json).unwrap();
+        fs::write(dir.join("state.json"), json).unwrap();
     }
 
     #[test]
-    fn scan_jobs_reads_metadata() {
+    fn scan_jobs_reads_state_with_worktree_path() {
         let tmp = tempfile::tempdir().unwrap();
         write_job(tmp.path(), "abc1",
-            r#"{"cwd":"/home/jane/projects/thelma","status":"running"}"#);
+            r#"{"cwd":"/home/jane","worktreePath":"/home/jane/projects/thelma","state":"working","inFlight":true}"#);
         write_job(tmp.path(), "abc2",
-            r#"{"cwd":"/home/jane/projects/zele","status":"completed"}"#);
+            r#"{"cwd":"/home/jane/projects/zele","worktreePath":null,"state":"done","inFlight":false}"#);
 
         let out = scan_jobs(tmp.path()).unwrap();
         assert_eq!(out.len(), 2);
-        let running = out.iter().filter(|s| matches!(s,
-            Session::BackgroundJob { status: JobStatus::Running, .. })).count();
-        assert_eq!(running, 1);
+        let working: Vec<_> = out.iter().filter(|s| matches!(s,
+            Session::BackgroundJob { status: JobStatus::Running, .. })).collect();
+        assert_eq!(working.len(), 1);
+        // The running job's effective cwd is its worktreePath, not its cwd.
+        if let Session::BackgroundJob { cwd, .. } = &working[0] {
+            assert_eq!(cwd, &PathBuf::from("/home/jane/projects/thelma"));
+        }
     }
 
     #[test]
     fn scan_jobs_skips_malformed() {
         let tmp = tempfile::tempdir().unwrap();
-        write_job(tmp.path(), "good", r#"{"cwd":"/x","status":"running"}"#);
+        write_job(tmp.path(), "good", r#"{"cwd":"/x","state":"working","inFlight":true}"#);
         write_job(tmp.path(), "bad", "this is not json");
 
         let out = scan_jobs(tmp.path()).unwrap();
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn scan_jobs_blocked_maps_to_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_job(tmp.path(), "b", r#"{"cwd":"/x","state":"blocked","inFlight":false}"#);
+        let out = scan_jobs(tmp.path()).unwrap();
+        assert!(matches!(&out[0],
+            Session::BackgroundJob { status: JobStatus::Failed, .. }));
     }
 
     #[test]
@@ -1096,10 +1120,8 @@ pub fn scan_jobs(jobs_dir: &Path) -> Result<Vec<Session>> {
         };
         let dir = entry.path();
         if !dir.is_dir() { continue; }
-        // Try a few likely filenames before giving up.
-        let candidates = ["metadata.json", "info.json", "manifest.json", "state.json"];
-        let meta_path = candidates.iter().map(|f| dir.join(f)).find(|p| p.exists());
-        let Some(meta_path) = meta_path else { continue };
+        let meta_path = dir.join("state.json");
+        if !meta_path.exists() { continue; }
         let bytes = match std::fs::read(&meta_path) {
             Ok(b) => b,
             Err(_) => continue,
@@ -1114,8 +1136,8 @@ pub fn scan_jobs(jobs_dir: &Path) -> Result<Vec<Session>> {
             .unwrap_or(Duration::ZERO);
         out.push(Session::BackgroundJob {
             id,
-            status: parse_status(meta.status.as_deref()),
-            cwd: meta.cwd,
+            status: parse_status(meta.state.as_deref(), meta.in_flight),
+            cwd: meta.effective_cwd(),
             age,
         });
     }
@@ -1157,10 +1179,20 @@ Append to the `tests` module:
     }
 
     #[test]
+    fn encode_cwd_replaces_dots() {
+        // Verified against real ~/.claude/projects/ on Muthur: both `/` and `.`
+        // collapse to `-`, producing `--` where `/.` appears in the source.
+        let cwd = Path::new("/home/jane/projects/thelma/.claude/worktrees/spec-dashboard-design");
+        assert_eq!(
+            encode_cwd(cwd),
+            "-home-jane-projects-thelma--claude-worktrees-spec-dashboard-design"
+        );
+    }
+
+    #[test]
     fn encode_cwd_handles_hyphens_in_dir_names() {
         // The reviewer flagged: decoding is irreversible, so we don't decode.
-        // We only ever go path -> encoded -> dir lookup. This test pins that
-        // a path with a literal hyphen still encodes deterministically.
+        // We only ever go path -> encoded -> dir lookup.
         let cwd = Path::new("/home/jane/projects/foo-bar");
         assert_eq!(encode_cwd(cwd), "-home-jane-projects-foo-bar");
     }
@@ -1198,11 +1230,14 @@ In `src/sessions.rs`, near the top:
 
 ```rust
 /// Encode an absolute path to the directory name used under `~/.claude/projects/`.
-/// This direction is well-defined; the reverse (decoding `foo-bar` back to a path
-/// containing a `/` or `-`) is ambiguous, so we never decode. We encode every
-/// known worktree path and look up the exact subdir.
+/// Both `/` and `.` collapse to `-` (verified against real data; see
+/// `docs/notes/format-findings.md`). The encoding is one-way and irreversible:
+/// `-a-b-c` could come from `/a/b/c`, `/a.b/c`, `/a/b.c`, etc.
+/// We never decode; we only go path -> encoded -> directory lookup.
 pub fn encode_cwd(p: &Path) -> String {
-    p.to_string_lossy().replace('/', "-")
+    p.to_string_lossy()
+        .replace('/', "-")
+        .replace('.', "-")
 }
 
 pub fn scan_interactive(projects_dir: &Path, known_worktrees: &[PathBuf]) -> Result<Vec<Session>> {
