@@ -1,3 +1,4 @@
+mod git;
 mod model;
 
 fn main() -> anyhow::Result<()> {
