@@ -12,8 +12,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{mpsc, Arc};
 
 fn main() -> Result<()> {
-    let projects_root = dirs::home_dir().unwrap_or_default().join("projects");
-    let mut state = app::initial_state(projects_root)?;
+    let roots = app::default_projects_roots();
+    let mut state = app::initial_state(roots)?;
     let mut ui_state = app::UiState::new();
 
     crossterm::terminal::enable_raw_mode()?;

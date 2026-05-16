@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -25,7 +25,6 @@ pub struct Worktree {
 pub struct CommitSummary {
     pub short_sha: String,
     pub subject: String,
-    pub age: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -34,13 +33,16 @@ pub enum Session {
         id: String,
         status: JobStatus,
         cwd: PathBuf,
-        age: Duration,
+        mtime: SystemTime,
+        /// Original prompt / task description from state.json `intent`.
+        /// Surfaces a meaningful description instead of just the opaque id.
+        intent: Option<String>,
     },
     Interactive {
         id: String,
         summary: String,
         cwd: PathBuf,
-        age: Duration,
+        mtime: SystemTime,
         state: SessionState,
     },
 }

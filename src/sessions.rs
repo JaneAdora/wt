@@ -19,6 +19,10 @@ struct JobMetadata {
     #[serde(default, rename = "updatedAt")]
     #[allow(dead_code)]
     updated_at: Option<String>,
+    /// Original prompt / task description. Far more useful as a row label
+    /// than the opaque hash id.
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 impl JobMetadata {
@@ -66,15 +70,15 @@ pub fn scan_jobs(jobs_dir: &Path) -> Result<Vec<Session>> {
             Ok(m) => m,
             Err(_) => continue,
         };
-        let age = std::fs::metadata(&meta_path)
+        let mtime = std::fs::metadata(&meta_path)
             .and_then(|m| m.modified())
-            .map(|mt| SystemTime::now().duration_since(mt).unwrap_or(Duration::ZERO))
-            .unwrap_or(Duration::ZERO);
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         out.push(Session::BackgroundJob {
             id,
             status: parse_status(meta.state.as_deref(), meta.in_flight),
             cwd: meta.effective_cwd(),
-            age,
+            mtime,
+            intent: meta.intent,
         });
     }
     Ok(out)
@@ -127,16 +131,13 @@ pub fn scan_interactive(
                 .unwrap_or("")
                 .to_string();
             let summary = first_summary_line(&fp).unwrap_or_default();
-            let age = SystemTime::now()
-                .duration_since(mt)
-                .unwrap_or(Duration::ZERO);
             sessions_here.push((
                 mt,
                 Session::Interactive {
                     id: stem,
                     summary,
                     cwd: known.clone(),
-                    age,
+                    mtime: mt,
                     state: SessionState::Active,
                 },
             ));

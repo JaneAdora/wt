@@ -2,7 +2,6 @@ use crate::git::{self, WorktreeEntry};
 use crate::model::{CommitSummary, Project, Worktree};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Walk `root` for immediate non-hidden subdirectories that contain `.git`.
 /// One Project per directory, worktrees populated by `git worktree list`.
@@ -31,6 +30,68 @@ pub fn scan(root: &Path) -> Result<Vec<Project>> {
         out.push(Project { name, root: path, worktrees });
     }
     Ok(out)
+}
+
+/// Scan multiple roots and merge results.
+///
+/// Roots are scanned in order; the first occurrence of any worktree path
+/// wins, so later roots can shadow earlier ones (rare). The combined
+/// project list is then sorted by name. Duplicate worktree paths across
+/// roots are deduped so the same repo doesn't show up twice if it happens
+/// to be reachable from two configured roots.
+pub fn scan_many(roots: &[PathBuf]) -> Result<Vec<Project>> {
+    let mut seen_worktrees: std::collections::HashSet<PathBuf> = Default::default();
+    let mut projects: Vec<Project> = Vec::new();
+
+    for root in roots {
+        let chunk = scan(root)?;
+        for mut p in chunk {
+            // Drop worktrees we've already seen via an earlier root.
+            p.worktrees.retain(|w| seen_worktrees.insert(w.path.clone()));
+            if p.worktrees.is_empty() {
+                continue;
+            }
+            projects.push(p);
+        }
+    }
+
+    // Sort projects by name (case-insensitive) for stable display.
+    projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(projects)
+}
+
+/// Resolve the project roots to scan. Reads `WT_ROOTS` env var
+/// (colon-separated paths, like `PATH`); falls back to a sensible default
+/// covering common locations: `~/projects`, `~/Projects`,
+/// `~/Projects/clients`.
+pub fn default_roots() -> Vec<PathBuf> {
+    if let Ok(env_value) = std::env::var("WT_ROOTS") {
+        if !env_value.trim().is_empty() {
+            return env_value
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .map(|s| expand_tilde(s))
+                .collect();
+        }
+    }
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut roots = vec![
+        home.join("projects"),
+        home.join("Projects"),
+        home.join("Projects/clients"),
+    ];
+    // Drop roots that don't exist so we don't waste readdir cycles.
+    roots.retain(|p| p.is_dir());
+    roots
+}
+
+fn expand_tilde(s: &str) -> PathBuf {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(s)
 }
 
 fn is_git_dir(path: &Path) -> bool {
@@ -92,11 +153,6 @@ pub fn enrich_with_status(projects: &mut [Project]) {
         drop(tx);
     });
 
-    let now_secs: i64 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
     while let Ok((i, j, status, log)) = rx.recv() {
         if let Some(s) = status {
             let wt = &mut projects[i].worktrees[j];
@@ -108,11 +164,9 @@ pub fn enrich_with_status(projects: &mut [Project]) {
         }
         if let Some(entries) = log {
             if let Some(e) = entries.first() {
-                let age_secs = (now_secs - e.committed_at).max(0) as u64;
                 projects[i].worktrees[j].last_commit = Some(CommitSummary {
                     short_sha: e.short_sha.clone(),
                     subject: e.subject.clone(),
-                    age: Duration::from_secs(age_secs),
                 });
             }
         }

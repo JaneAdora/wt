@@ -52,12 +52,12 @@ impl Default for UiState {
     }
 }
 
-pub fn default_projects_root() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join("projects")
+pub fn default_projects_roots() -> Vec<PathBuf> {
+    discovery::default_roots()
 }
 
-pub fn initial_state(projects_root: PathBuf) -> Result<AppState> {
-    let mut projects = discovery::scan(&projects_root)?;
+pub fn initial_state(projects_roots: Vec<PathBuf>) -> Result<AppState> {
+    let mut projects = discovery::scan_many(&projects_roots)?;
     discovery::enrich_with_status(&mut projects);
 
     let known: Vec<PathBuf> = projects
@@ -89,8 +89,8 @@ pub fn initial_state(projects_root: PathBuf) -> Result<AppState> {
 
 /// Refresh in place, preserving selection/filter/search/focus/expanded.
 /// Bumps `generation` so in-flight tick messages can be dropped.
-pub fn refresh_in_place(state: &mut AppState, projects_root: PathBuf) -> Result<()> {
-    let mut projects = discovery::scan(&projects_root)?;
+pub fn refresh_in_place(state: &mut AppState, projects_roots: Vec<PathBuf>) -> Result<()> {
+    let mut projects = discovery::scan_many(&projects_roots)?;
     discovery::enrich_with_status(&mut projects);
 
     let known: Vec<PathBuf> = projects
@@ -294,7 +294,7 @@ fn handle_key(
             Ok(None)
         }
         (KeyCode::Char('r'), _) => {
-            refresh_in_place(state, default_projects_root())?;
+            refresh_in_place(state, default_projects_roots())?;
             state.status.say("refreshed");
             Ok(None)
         }
@@ -392,18 +392,20 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn fixture_state() -> AppState {
+        let now = std::time::SystemTime::now();
         let interactive = Session::Interactive {
             id: "abc-123".to_string(),
             summary: "fix gmail".to_string(),
             cwd: PathBuf::from("/p/alpha"),
-            age: Duration::from_secs(60),
+            mtime: now,
             state: SessionState::Active,
         };
         let bgjob = Session::BackgroundJob {
             id: "fe9c".to_string(),
             status: JobStatus::Running,
             cwd: PathBuf::from("/p/alpha"),
-            age: Duration::from_secs(10),
+            mtime: now,
+            intent: None,
         };
         let wt = Worktree {
             path: PathBuf::from("/p/alpha"),
@@ -512,14 +514,15 @@ mod tests {
             .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
             .status().unwrap();
 
-        let mut state = initial_state(tmp.path().to_path_buf()).unwrap();
+        let roots = vec![tmp.path().to_path_buf()];
+        let mut state = initial_state(roots.clone()).unwrap();
         let original_selected = state.selected.clone();
         state.filter = ActiveFilter::All;
         state.search = Some("alph".to_string());
         state.focus = Pane::Sessions;
         let original_gen = state.generation;
 
-        refresh_in_place(&mut state, tmp.path().to_path_buf()).unwrap();
+        refresh_in_place(&mut state, roots).unwrap();
 
         assert_eq!(state.selected, original_selected, "selection preserved");
         assert_eq!(state.filter, ActiveFilter::All, "filter preserved");

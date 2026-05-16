@@ -195,7 +195,8 @@ mod tests {
                     id: format!("{i}"),
                     status: JobStatus::Running,
                     cwd: "/x/y".into(),
-                    age: std::time::Duration::ZERO,
+                    mtime: std::time::SystemTime::now(),
+                    intent: None,
                 })
                 .collect(),
             has_upstream: true,
