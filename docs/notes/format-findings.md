@@ -58,14 +58,14 @@ Because both `/` and `.` collapse to `-`, this encoding is **not reversible**: a
 **Per-session file:** `<session-uuid>.jsonl`. One event per line, append-only. UUIDs are standard 8-4-4-4-12 hex format.
 
 **Line `type` values observed:**
-- `user` — a user prompt event; `.message.content` is a string with the prompt text
-- `assistant` — assistant response event
-- `system` — system message event
-- `permission-mode` — permission mode change marker
-- `attachment` — file or media attachment event
-- `file-history-snapshot` — periodic file-history record
-- `ai-title` — auto-generated session title (when present)
-- `last-prompt` — marker for the most recent user prompt
+- `user` : a user prompt event; `.message.content` is a string with the prompt text
+- `assistant` : assistant response event
+- `system` : system message event
+- `permission-mode` : permission mode change marker
+- `attachment` : file or media attachment event
+- `file-history-snapshot` : periodic file-history record
+- `ai-title` : auto-generated session title (when present)
+- `last-prompt` : marker for the most recent user prompt
 
 **Common keys per line:** `type`, `sessionId`, often `leafUuid`, often `timestamp` (ISO 8601 with `.451Z`-style ms suffix), often `message` (object with `role` + `content`).
 
@@ -132,7 +132,7 @@ u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>  (unmerged)
 
 `XY` is two characters: index status / worktree status. Anything starting with `1`, `2`, `u`, `?`, `!` indicates dirtiness for our purposes. The plan's `parse_status_v2` already treats any non-`#`, non-empty line as dirty, which is correct.
 
-When no upstream is set, `# branch.upstream` and `# branch.ab` lines are absent and the parser leaves `upstream = None`, `ahead = 0`, `behind = 0` — that's the desired behavior per the spec's "no-upstream-quiet = inactive" rule.
+When no upstream is set, `# branch.upstream` and `# branch.ab` lines are absent and the parser leaves `upstream = None`, `ahead = 0`, `behind = 0` : that's the desired behavior per the spec's "no-upstream-quiet = inactive" rule.
 
 ## Implementation Notes
 
