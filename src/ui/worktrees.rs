@@ -57,27 +57,42 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
     for p in &visible_projects {
         let expanded = state.expanded.contains(&p.name);
         let marker = if expanded { "▼" } else { "▸" };
-        // Active-session count for this project's visible worktrees.
         let active = p
             .worktrees
             .iter()
             .filter(|w| worktree_visible(w, state))
             .map(|w| w.sessions.len())
             .sum::<usize>();
-        let count_label = if active > 0 {
-            format!("({} · {} sess)", p.worktrees.len(), active)
-        } else {
-            format!("({})", p.worktrees.len())
-        };
+        let dirty_count = p
+            .worktrees
+            .iter()
+            .filter(|w| worktree_visible(w, state) && w.dirty)
+            .count();
+
+        // Compose count_label with up to three pieces: worktree count,
+        // session count, dirty count. Keep it short.
+        let mut parts = vec![p.worktrees.len().to_string()];
+        if active > 0 {
+            parts.push(format!("{active} sess"));
+        }
+        let count_label = format!("({})", parts.join(" · "));
 
         let path = TreePath::project_header(p);
         if state.selected.as_ref() == Some(&path) {
             selected_idx = Some(idx);
         }
-        items.push(ListItem::new(Line::from(vec![
+        let mut header_spans = vec![
             row_prefix(state, &path),
             Span::raw(format!("{marker} {} {}", p.name, count_label)),
-        ])));
+        ];
+        if dirty_count > 0 {
+            header_spans.push(Span::raw("  "));
+            header_spans.push(Span::styled(
+                format!("●{dirty_count}"),
+                theme::status_icon(),
+            ));
+        }
+        items.push(ListItem::new(Line::from(header_spans)));
         idx += 1;
 
         if expanded {
@@ -247,7 +262,7 @@ mod tests {
             dirty,
             ahead: 0,
             behind: 0,
-            last_commit: None,
+            recent_commits: vec![],
             sessions: (0..sessions)
                 .map(|i| Session::BackgroundJob {
                     id: format!("{i}"),

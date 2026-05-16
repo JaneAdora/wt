@@ -5,6 +5,7 @@ NAVIGATION
   Tab / Shift-Tab     Switch focus between WORKTREES and SESSIONS
   Enter               Project row: expand/collapse
                       Worktree row: focus the sessions pane
+  E                   Expand all / collapse all (toggle)
 
 ACTIONS
   c                   Copy launch command to clipboard (OSC 52)

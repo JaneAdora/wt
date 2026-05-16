@@ -173,12 +173,13 @@ fn apply_tick(state: &mut AppState, msg: TickMsg) {
 
 fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
     let area = f.area();
+    let footer_rows = footer_height(area.width, ui);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(60),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(footer_rows),
         ])
         .split(area);
     let cols = layout::choose_columns(area.width);
@@ -200,6 +201,26 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
     }
 }
 
+const FOOTER_KEYS: &str =
+    "? help · ↑↓/jk · Tab · ↵ · E expand-all · c copy · D launch · o exit · r refresh · / filter · a active · g log · q quit";
+
+/// How many rows the bottom footer needs at this terminal width and mode.
+/// Modal/help modes return 0 (their own title_bottom hosts the hint).
+/// Search mode returns 1. Normal mode word-wraps FOOTER_KEYS.
+fn footer_height(width: u16, ui: &UiState) -> u16 {
+    match &ui.mode {
+        InputMode::Modal { .. } | InputMode::Help { .. } => 0,
+        InputMode::Search(_) => 1,
+        InputMode::Normal => {
+            let chars = FOOTER_KEYS.chars().count() as u16;
+            let w = width.max(1);
+            // Ceiling division. Cap at 4 rows so the footer never eats
+            // more than ~1/6 of a phone screen.
+            ((chars + w - 1) / w).clamp(1, 4)
+        }
+    }
+}
+
 fn render_footer(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -208,7 +229,7 @@ fn render_footer(
     ui: &UiState,
 ) {
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::Paragraph;
+    use ratatui::widgets::{Paragraph, Wrap};
 
     match &ui.mode {
         InputMode::Search(buf) => {
@@ -219,25 +240,25 @@ fn render_footer(
             return;
         }
         InputMode::Modal { .. } | InputMode::Help { .. } => {
-            // Modal/help have their own footer hints in title_bottom.
             return;
         }
         InputMode::Normal => {}
     }
 
-    let mut bits = vec![Span::raw("? help · ↑↓/jk · Tab · ↵ · c copy · D launch · r refresh · / filter · a active · g log · q")];
+    // Compose: keymap (wraps) + any transient status + "narrow" warn.
+    let mut text = FOOTER_KEYS.to_string();
     if cols.too_narrow {
-        bits.push(Span::raw("  "));
-        bits.push(Span::styled("narrow", crate::ui::theme::status_line()));
+        text.push_str("  [narrow]");
     }
     if let Some(msg) = state.status.current() {
-        bits.push(Span::raw("  "));
-        bits.push(Span::styled(
-            msg.to_string(),
-            crate::ui::theme::status_line(),
-        ));
+        text.push_str("  · ");
+        text.push_str(msg);
     }
-    f.render_widget(Paragraph::new(Line::from(bits)), area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::raw(text))).wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn centered_rect(parent: Rect, percent_x: u16, percent_y: u16) -> Rect {
@@ -332,6 +353,10 @@ fn handle_key(
         }
         (KeyCode::Char('?'), _) => {
             ui.mode = InputMode::Help { scroll: 0 };
+            Ok(None)
+        }
+        (KeyCode::Char('E'), _) => {
+            toggle_expand_all(state);
             Ok(None)
         }
         (KeyCode::Char('r'), _) => {
@@ -430,6 +455,20 @@ fn handle_scroll_key(scroll: &mut u16, total: u16, key: &KeyEvent) -> bool {
     false
 }
 
+/// If any project is collapsed, expand all. Otherwise collapse all.
+/// The "all collapsed" state empties the expanded set; expansion
+/// re-fills it with every project name.
+fn toggle_expand_all(state: &mut AppState) {
+    let all_expanded = state.projects.iter().all(|p| state.expanded.contains(&p.name));
+    if all_expanded {
+        state.expanded.clear();
+        state.status.say("collapsed all");
+    } else {
+        state.expanded = state.projects.iter().map(|p| p.name.clone()).collect();
+        state.status.say("expanded all");
+    }
+}
+
 fn handle_enter(state: &mut AppState) {
     let Some(sel) = state.selected.clone() else {
         return;
@@ -489,7 +528,7 @@ mod tests {
             dirty: false,
             ahead: 0,
             behind: 0,
-            last_commit: None,
+            recent_commits: vec![],
             sessions: vec![interactive, bgjob],
             has_upstream: false,
         };
@@ -612,7 +651,7 @@ mod tests {
             dirty: false,
             ahead: 0,
             behind: 0,
-            last_commit: None,
+            recent_commits: vec![],
             sessions: vec![],
             has_upstream: false,
         };

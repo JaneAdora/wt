@@ -16,7 +16,8 @@ pub struct Worktree {
     pub dirty: bool,
     pub ahead: u32,
     pub behind: u32,
-    pub last_commit: Option<CommitSummary>,
+    /// Most recent commits, newest first. Populated by discovery::enrich_with_status.
+    pub recent_commits: Vec<CommitSummary>,
     pub sessions: Vec<Session>,
     pub has_upstream: bool,
 }
@@ -132,7 +133,7 @@ mod tests {
         let p = Project { name: "x".into(), root: PathBuf::from("/x"), worktrees: vec![] };
         let wt = Worktree {
             path: "/x/wt".into(), branch: None, dirty: false,
-            ahead: 0, behind: 0, last_commit: None, sessions: vec![], has_upstream: false,
+            ahead: 0, behind: 0, recent_commits: vec![], sessions: vec![], has_upstream: false,
         };
         let header = TreePath::project_header(&p);
         let row = TreePath::worktree_row(&p, &wt);

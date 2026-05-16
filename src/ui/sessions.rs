@@ -50,12 +50,26 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 theme::dim_footer(),
             )));
         }
-        if let Some(c) = &wt.last_commit {
-            let line = format!("Last: {} \"{}\"", c.short_sha, c.subject);
+        if !wt.recent_commits.is_empty() {
+            // Blank separator + RECENT header + commits, each width-aware.
+            items.push(ListItem::new(Span::raw("")));
             items.push(ListItem::new(Span::styled(
-                truncate_chars(&line, inner_width as usize),
-                theme::dim_footer(),
+                "RECENT",
+                theme::pane_header(),
             )));
+            for c in &wt.recent_commits {
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled(format!("  {}", c.short_sha), theme::status_icon()),
+                    Span::raw("  "),
+                    Span::styled(
+                        truncate_chars(
+                            &c.subject,
+                            inner_width.saturating_sub(c.short_sha.len() as u16 + 4) as usize,
+                        ),
+                        theme::dim_footer(),
+                    ),
+                ])));
+            }
         }
     }
     f.render_widget(List::new(items).block(block), area);

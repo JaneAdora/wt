@@ -105,7 +105,7 @@ fn entry_to_worktree(e: WorktreeEntry) -> Worktree {
         dirty: false,
         ahead: 0,
         behind: 0,
-        last_commit: None,
+        recent_commits: vec![],
         sessions: vec![],
         has_upstream: false,
     }
@@ -118,14 +118,16 @@ fn bare_worktree(path: &Path) -> Worktree {
         dirty: false,
         ahead: 0,
         behind: 0,
-        last_commit: None,
+        recent_commits: vec![],
         sessions: vec![],
         has_upstream: false,
     }
 }
 
-/// Populate dirty/ahead/behind/has_upstream/last_commit on each worktree.
-/// Runs per-repo git calls in parallel via `thread::scope`.
+/// Populate dirty/ahead/behind/has_upstream/recent_commits on each worktree.
+/// Runs per-repo git calls in parallel via `thread::scope`. Fetches the
+/// last 5 commits per worktree so the sessions pane can show a mini log
+/// when there's empty space.
 pub fn enrich_with_status(projects: &mut [Project]) {
     use std::sync::mpsc;
 
@@ -146,7 +148,7 @@ pub fn enrich_with_status(projects: &mut [Project]) {
             let tx = tx.clone();
             s.spawn(move || {
                 let status = git::run_status_v2(&path).ok();
-                let log = git::run_log_recent(&path, 1).ok();
+                let log = git::run_log_recent(&path, 5).ok();
                 let _ = tx.send((i, j, status, log));
             });
         }
@@ -163,12 +165,13 @@ pub fn enrich_with_status(projects: &mut [Project]) {
             wt.has_upstream = s.upstream.is_some();
         }
         if let Some(entries) = log {
-            if let Some(e) = entries.first() {
-                projects[i].worktrees[j].last_commit = Some(CommitSummary {
-                    short_sha: e.short_sha.clone(),
-                    subject: e.subject.clone(),
-                });
-            }
+            projects[i].worktrees[j].recent_commits = entries
+                .into_iter()
+                .map(|e| CommitSummary {
+                    short_sha: e.short_sha,
+                    subject: e.subject,
+                })
+                .collect();
         }
     }
 }
@@ -222,13 +225,13 @@ mod tests {
     }
 
     #[test]
-    fn enrich_populates_last_commit_from_init() {
+    fn enrich_populates_recent_commits_from_init() {
         let tmp = tempfile::tempdir().unwrap();
         make_tmp_repo(tmp.path(), "alpha");
         let mut projects = scan(tmp.path()).unwrap();
         enrich_with_status(&mut projects);
         let wt = &projects[0].worktrees[0];
-        assert!(wt.last_commit.is_some());
-        assert_eq!(wt.last_commit.as_ref().unwrap().subject, "init");
+        assert!(!wt.recent_commits.is_empty());
+        assert_eq!(wt.recent_commits[0].subject, "init");
     }
 }

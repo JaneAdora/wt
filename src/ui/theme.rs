@@ -29,6 +29,7 @@ pub fn dim_footer() -> Style {
     Style::default().fg(LAVENDER).add_modifier(Modifier::DIM)
 }
 
+#[allow(dead_code)] // reserved for transient toasts; footer now uses default fg
 pub fn status_line() -> Style {
     Style::default().fg(MAGENTA)
 }
