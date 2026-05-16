@@ -202,7 +202,7 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
 }
 
 const FOOTER_KEYS: &str =
-    "? help · ↑↓/jk · Tab · ↵ · E expand-all · c copy · D launch · o exit · r refresh · / filter · a active · g log · q quit";
+    "? help · ↑↓/jk · Tab · ↵ · e expand-all · c copy · d launch · o exit · r refresh · / filter · a active · g log · q quit";
 
 /// How many rows the bottom footer needs at this terminal width and mode.
 /// Modal/help modes return 0 (their own title_bottom hosts the hint).
@@ -345,7 +345,9 @@ fn handle_key(
             }
             Ok(None)
         }
-        (KeyCode::Char('D'), _) => {
+        // Bind both cases. Speech-to-text often capitalises and we'd
+        // rather forgive that than make the user retype.
+        (KeyCode::Char('d') | KeyCode::Char('D'), _) => {
             if let Some(cmd) = launch_for_selected(state, true) {
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
             }
@@ -355,7 +357,9 @@ fn handle_key(
             ui.mode = InputMode::Help { scroll: 0 };
             Ok(None)
         }
-        (KeyCode::Char('E'), _) => {
+        // Bind both cases so caps-lock / phone-keyboard quirks don't
+        // hide the key. 'e' is unused elsewhere so no conflict.
+        (KeyCode::Char('E') | KeyCode::Char('e'), _) => {
             toggle_expand_all(state);
             Ok(None)
         }

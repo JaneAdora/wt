@@ -148,7 +148,7 @@ pub fn enrich_with_status(projects: &mut [Project]) {
             let tx = tx.clone();
             s.spawn(move || {
                 let status = git::run_status_v2(&path).ok();
-                let log = git::run_log_recent(&path, 5).ok();
+                let log = git::run_log_recent(&path, 15).ok();
                 let _ = tx.send((i, j, status, log));
             });
         }
@@ -170,6 +170,7 @@ pub fn enrich_with_status(projects: &mut [Project]) {
                 .map(|e| CommitSummary {
                     short_sha: e.short_sha,
                     subject: e.subject,
+                    committed_at: e.committed_at,
                 })
                 .collect();
         }

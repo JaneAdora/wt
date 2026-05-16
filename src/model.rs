@@ -26,6 +26,9 @@ pub struct Worktree {
 pub struct CommitSummary {
     pub short_sha: String,
     pub subject: String,
+    /// Unix epoch seconds (committer date). For display formatting; never
+    /// compared across timezones since git already normalises this.
+    pub committed_at: i64,
 }
 
 #[derive(Debug, Clone)]

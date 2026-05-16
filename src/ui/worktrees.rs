@@ -32,6 +32,11 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
         "WORKTREES ({} wt · {} sess)",
         total_wts, total_active_sessions
     );
+    let title_style = if focused {
+        theme::pane_header_focused()
+    } else {
+        theme::pane_header()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused {
@@ -39,14 +44,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
         } else {
             Style::default()
         })
-        .title(Span::styled(
-            title,
-            if focused {
-                theme::pane_header_focused()
-            } else {
-                theme::pane_header()
-            },
-        ));
+        .title(Span::styled(title, title_style))
+        // Right-aligned wizard brand. Width-permitting; ratatui clips if
+        // it overlaps the left title.
+        .title_top(Line::from(Span::styled("🧙 ww", theme::dim_footer())).right_aligned());
 
     // Build items AND track the index of the currently-selected row so
     // ratatui can auto-scroll to keep it visible.

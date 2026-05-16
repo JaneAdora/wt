@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem},
     Frame,
 };
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     use ratatui::style::Style;
@@ -58,14 +58,18 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 theme::pane_header(),
             )));
             for c in &wt.recent_commits {
+                let when = fmt_when_epoch(c.committed_at);
+                // Overhead: 2 indent + sha + 2 + when(8) + 2
+                let overhead = 2 + c.short_sha.chars().count() + 2 + 8 + 2;
+                let subj_width = (inner_width as usize).saturating_sub(overhead);
                 items.push(ListItem::new(Line::from(vec![
-                    Span::styled(format!("  {}", c.short_sha), theme::status_icon()),
+                    Span::raw("  "),
+                    Span::styled(c.short_sha.clone(), theme::status_icon()),
+                    Span::raw("  "),
+                    Span::raw(when),
                     Span::raw("  "),
                     Span::styled(
-                        truncate_chars(
-                            &c.subject,
-                            inner_width.saturating_sub(c.short_sha.len() as u16 + 4) as usize,
-                        ),
+                        truncate_chars(&c.subject, subj_width),
                         theme::dim_footer(),
                     ),
                 ])));
@@ -185,23 +189,28 @@ fn state_label(s: SessionState) -> &'static str {
 /// under 24h, or an absolute month-day ("May 14", "Apr 02") for older.
 /// Always pads to the same column width for nice alignment.
 fn fmt_when(mtime: SystemTime) -> String {
-    let now = SystemTime::now();
-    let age = now.duration_since(mtime).unwrap_or(Duration::ZERO);
-    let s = age.as_secs();
-    let label = if s < 60 {
-        format!("{s}s")
-    } else if s < 3600 {
-        format!("{}m", s / 60)
-    } else if s < 86400 {
-        format!("{}h", s / 3600)
+    let epoch = mtime
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    fmt_when_epoch(epoch)
+}
+
+/// Same as fmt_when but takes Unix epoch seconds directly.
+pub fn fmt_when_epoch(epoch_secs: i64) -> String {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let age = (now - epoch_secs).max(0) as u64;
+    let label = if age < 60 {
+        format!("{age}s")
+    } else if age < 3600 {
+        format!("{}m", age / 60)
+    } else if age < 86400 {
+        format!("{}h", age / 3600)
     } else {
-        // Older than 24h: format as "Mon DD" using a small civil-time
-        // converter on the Unix epoch seconds (UTC).
-        let epoch = mtime
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        ymd_month_day(epoch)
+        ymd_month_day(epoch_secs)
     };
     format!("{label:<8}")
 }
@@ -244,6 +253,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn when_relative_under_24h() {
