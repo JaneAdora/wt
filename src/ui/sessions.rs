@@ -1,5 +1,5 @@
 use crate::model::{AppState, JobStatus, Pane, Session, SessionState, Worktree};
-use crate::ui::theme;
+use crate::ui::theme::{self, FOCUS_MARKER, UNFOCUSED_PREFIX};
 use ratatui::{
     layout::Rect,
     text::{Line, Span},
@@ -23,8 +23,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let wt = current_worktree(state);
     let mut items: Vec<ListItem> = Vec::new();
     if let Some(wt) = wt {
-        for s in &wt.sessions {
-            items.push(ListItem::new(Line::from(session_spans(s))));
+        let sel_idx = if state.focus == Pane::Sessions {
+            state.selected_session
+        } else {
+            None
+        };
+        for (i, s) in wt.sessions.iter().enumerate() {
+            let is_sel = sel_idx == Some(i);
+            items.push(ListItem::new(Line::from(session_spans(s, is_sel))));
         }
         if items.is_empty() {
             items.push(ListItem::new(Span::styled(
@@ -42,11 +48,17 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     f.render_widget(List::new(items).block(block), area);
 }
 
-fn session_spans<'a>(s: &Session) -> Vec<Span<'a>> {
+fn session_spans<'a>(s: &Session, is_selected: bool) -> Vec<Span<'a>> {
+    let prefix = if is_selected {
+        Span::styled(FOCUS_MARKER, theme::active_row())
+    } else {
+        Span::raw(UNFOCUSED_PREFIX)
+    };
     match s {
         Session::BackgroundJob {
             id, status, age, ..
         } => vec![
+            prefix,
             Span::raw("⚙ bg  "),
             Span::raw(short(id)),
             Span::raw("  "),
@@ -61,6 +73,7 @@ fn session_spans<'a>(s: &Session) -> Vec<Span<'a>> {
             state,
             ..
         } => vec![
+            prefix,
             Span::raw("💬 int "),
             Span::raw(short(id)),
             Span::raw("  "),

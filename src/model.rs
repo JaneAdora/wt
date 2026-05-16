@@ -4,6 +4,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct Project {
     pub name: String,
+    #[allow(dead_code)]
     pub root: PathBuf,
     pub worktrees: Vec<Worktree>,
 }
@@ -84,6 +85,10 @@ pub struct AppState {
     pub status: StatusLine,
     pub expanded: std::collections::HashSet<String>,
     pub generation: u64,
+    /// Index into the currently-selected worktree's sessions list. Reset to
+    /// 0 whenever the worktree selection changes. None means no session
+    /// selected (e.g., current worktree has no sessions).
+    pub selected_session: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]

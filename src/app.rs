@@ -83,6 +83,7 @@ pub fn initial_state(projects_root: PathBuf) -> Result<AppState> {
         status: StatusLine::default(),
         expanded,
         generation: 0,
+        selected_session: None,
     })
 }
 
@@ -310,9 +311,10 @@ fn handle_key(
             Ok(None)
         }
         (KeyCode::Char('g'), _) => {
-            if let Some(path) = current_worktree_path(state) {
-                let entries = crate::git::run_log_recent(&path, 20).unwrap_or_default();
-                let title = path
+            if let Some(wt) = current_worktree(state) {
+                let entries = crate::git::run_log_recent(&wt.path, 20).unwrap_or_default();
+                let title = wt
+                    .path
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("?")
@@ -359,11 +361,180 @@ fn handle_enter(state: &mut AppState) {
     if sel.worktree.is_none() {
         if state.expanded.contains(&sel.project) {
             state.expanded.remove(&sel.project);
+            // Selection may now point at a hidden row; if so, leave the
+            // selection on the project header instead so the cursor stays
+            // visible. The TreePath struct enforces this via worktree=None
+            // for project rows, but the selected field is unchanged here,
+            // which is correct as long as we collapsed the *currently*
+            // selected project's worktrees.
         } else {
             state.expanded.insert(sel.project.clone());
         }
     } else {
         state.focus = Pane::Sessions;
+        // Initialise session selection so j/k in the sessions pane works.
+        if state.selected_session.is_none() {
+            if let Some(wt) = current_worktree(state) {
+                if !wt.sessions.is_empty() {
+                    state.selected_session = Some(0);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{JobStatus, Project, Session, SessionState, Worktree};
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    fn fixture_state() -> AppState {
+        let interactive = Session::Interactive {
+            id: "abc-123".to_string(),
+            summary: "fix gmail".to_string(),
+            cwd: PathBuf::from("/p/alpha"),
+            age: Duration::from_secs(60),
+            state: SessionState::Active,
+        };
+        let bgjob = Session::BackgroundJob {
+            id: "fe9c".to_string(),
+            status: JobStatus::Running,
+            cwd: PathBuf::from("/p/alpha"),
+            age: Duration::from_secs(10),
+        };
+        let wt = Worktree {
+            path: PathBuf::from("/p/alpha"),
+            branch: Some("main".into()),
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            last_commit: None,
+            sessions: vec![interactive, bgjob],
+            has_upstream: false,
+        };
+        let proj = Project {
+            name: "alpha".into(),
+            root: PathBuf::from("/p"),
+            worktrees: vec![wt.clone()],
+        };
+        let selected = Some(TreePath::worktree_row(&proj, &wt));
+        let mut expanded = HashSet::new();
+        expanded.insert("alpha".to_string());
+        AppState {
+            projects: vec![proj],
+            selected,
+            focus: Pane::Worktrees,
+            filter: ActiveFilter::All,
+            search: None,
+            last_refresh: Instant::now(),
+            status: StatusLine::default(),
+            expanded,
+            generation: 0,
+            selected_session: None,
+        }
+    }
+
+    #[test]
+    fn launch_for_worktree_focus_uses_no_resume() {
+        let state = fixture_state();
+        let cmd = launch_for_selected(&state).unwrap();
+        assert_eq!(cmd, "cd /p/alpha && claude");
+    }
+
+    #[test]
+    fn launch_for_session_focus_uses_resume_for_interactive() {
+        let mut state = fixture_state();
+        state.focus = Pane::Sessions;
+        state.selected_session = Some(0); // first session is interactive
+        let cmd = launch_for_selected(&state).unwrap();
+        assert_eq!(cmd, "cd /p/alpha && claude --resume abc-123");
+    }
+
+    #[test]
+    fn launch_for_session_focus_bg_job_falls_back_to_worktree() {
+        let mut state = fixture_state();
+        state.focus = Pane::Sessions;
+        state.selected_session = Some(1); // second session is bg job
+        let cmd = launch_for_selected(&state).unwrap();
+        assert_eq!(cmd, "cd /p/alpha && claude");
+    }
+
+    #[test]
+    fn move_session_advances_within_pane() {
+        let mut state = fixture_state();
+        state.focus = Pane::Sessions;
+        state.selected_session = Some(0);
+        move_selection(&mut state, 1);
+        assert_eq!(state.selected_session, Some(1));
+        move_selection(&mut state, 1);
+        assert_eq!(state.selected_session, Some(1)); // clamped at last
+        move_selection(&mut state, -1);
+        assert_eq!(state.selected_session, Some(0));
+    }
+
+    #[test]
+    fn worktree_selection_change_resets_session_index() {
+        // Two worktrees on the same project so the cursor can move.
+        let mut state = fixture_state();
+        // Add a second worktree.
+        let wt2 = Worktree {
+            path: PathBuf::from("/p/alpha/.claude/worktrees/x"),
+            branch: Some("x".into()),
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            last_commit: None,
+            sessions: vec![],
+            has_upstream: false,
+        };
+        state.projects[0].worktrees.push(wt2);
+        state.selected_session = Some(3); // pretend we had one selected
+
+        move_selection(&mut state, 1); // moves worktree selection in Worktrees pane
+        assert_eq!(state.selected_session, None, "session selection must reset on worktree change");
+    }
+
+    #[test]
+    fn refresh_preserves_user_state() {
+        // Build a temp project root with one real repo so initial_state +
+        // refresh_in_place can both run.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("alpha");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "init"])
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
+            .status().unwrap();
+
+        let mut state = initial_state(tmp.path().to_path_buf()).unwrap();
+        let original_selected = state.selected.clone();
+        state.filter = ActiveFilter::All;
+        state.search = Some("alph".to_string());
+        state.focus = Pane::Sessions;
+        let original_gen = state.generation;
+
+        refresh_in_place(&mut state, tmp.path().to_path_buf()).unwrap();
+
+        assert_eq!(state.selected, original_selected, "selection preserved");
+        assert_eq!(state.filter, ActiveFilter::All, "filter preserved");
+        assert_eq!(state.search.as_deref(), Some("alph"), "search preserved");
+        assert_eq!(state.focus, Pane::Sessions, "focus preserved");
+        assert_ne!(state.generation, original_gen, "generation bumped");
+    }
+}
+
+fn current_worktree<'a>(state: &'a AppState) -> Option<&'a crate::model::Worktree> {
+    let sel = state.selected.as_ref()?;
+    let p = state.projects.iter().find(|p| p.name == sel.project)?;
+    match &sel.worktree {
+        Some(path) => p.worktrees.iter().find(|w| w.path == *path),
+        None => p.worktrees.first(),
     }
 }
 
@@ -412,6 +583,13 @@ fn is_active_or_search_match(w: &Worktree, state: &AppState) -> bool {
 }
 
 fn move_selection(state: &mut AppState, delta: i32) {
+    match state.focus {
+        Pane::Worktrees => move_worktree_selection(state, delta),
+        Pane::Sessions => move_session_selection(state, delta),
+    }
+}
+
+fn move_worktree_selection(state: &mut AppState, delta: i32) {
     let paths = visible_paths(state);
     if paths.is_empty() {
         return;
@@ -422,7 +600,25 @@ fn move_selection(state: &mut AppState, delta: i32) {
         .and_then(|s| paths.iter().position(|p| p == s))
         .unwrap_or(0) as i32;
     let new = (idx + delta).clamp(0, paths.len() as i32 - 1) as usize;
-    state.selected = Some(paths[new].clone());
+    let new_path = paths[new].clone();
+    if state.selected.as_ref() != Some(&new_path) {
+        // Worktree (or project header) changed: reset session selection.
+        state.selected_session = None;
+    }
+    state.selected = Some(new_path);
+}
+
+fn move_session_selection(state: &mut AppState, delta: i32) {
+    let count = current_worktree(state)
+        .map(|wt| wt.sessions.len())
+        .unwrap_or(0);
+    if count == 0 {
+        state.selected_session = None;
+        return;
+    }
+    let cur = state.selected_session.unwrap_or(0) as i32;
+    let new = (cur + delta).clamp(0, count as i32 - 1) as usize;
+    state.selected_session = Some(new);
 }
 
 fn copy_current(state: &mut AppState) -> Result<()> {
@@ -436,21 +632,19 @@ fn copy_current(state: &mut AppState) -> Result<()> {
 }
 
 fn launch_for_selected(state: &AppState) -> Option<String> {
-    let sel = state.selected.as_ref()?;
-    let p = state.projects.iter().find(|p| p.name == sel.project)?;
-    let wt = match &sel.worktree {
-        Some(path) => p.worktrees.iter().find(|w| w.path == *path)?,
-        None => p.worktrees.first()?,
-    };
+    let wt = current_worktree(state)?;
+
+    // If the sessions pane has focus and an interactive session is selected,
+    // build `cd <session-cwd> && claude --resume <id>`. Background jobs and
+    // unfocused selection fall back to `cd <worktree-path> && claude`.
+    if state.focus == Pane::Sessions {
+        if let Some(idx) = state.selected_session {
+            if let Some(Session::Interactive { id, cwd, .. }) = wt.sessions.get(idx) {
+                return Some(actions::launch_command_for(cwd, Some(id)));
+            }
+        }
+    }
+
     Some(actions::launch_command_for(&wt.path, None))
 }
 
-fn current_worktree_path(state: &AppState) -> Option<PathBuf> {
-    let sel = state.selected.as_ref()?;
-    let p = state.projects.iter().find(|p| p.name == sel.project)?;
-    let wt = match &sel.worktree {
-        Some(path) => p.worktrees.iter().find(|w| w.path == *path)?,
-        None => p.worktrees.first()?,
-    };
-    Some(wt.path.clone())
-}
