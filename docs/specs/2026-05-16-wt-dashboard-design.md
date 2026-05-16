@@ -28,7 +28,8 @@ A lightweight terminal dashboard that lets Jane keep track of git worktrees acro
 
 These are hard targets, not aspirations:
 
-- Cold-start to first render: under 100 ms on Muthur for ~12 projects.
+- **First render: under 50 ms** typical for ~12 projects. Initial render shows discovered worktrees with empty status columns; enrichment happens in parallel and populates progressively.
+- **Full status enrichment: under 1 s** typical. Per-repo git calls (`status --porcelain=v2` + `log -1`) run in a bounded thread pool so total time is roughly max-per-repo rather than sum.
 - Stripped release binary: under 5 MB.
 - Resident memory: under 20 MB.
 - Background tick CPU: imperceptible (reads ~40 small files every 10 s).

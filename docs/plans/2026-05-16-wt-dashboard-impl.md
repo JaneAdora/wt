@@ -6,7 +6,7 @@
 
 **Architecture:** Single-binary Rust app. Three pure I/O modules (`discovery`, `git`, `sessions`) feed a `model::AppState` mutated only by `app`. The `ui` module is a one-way function of `&AppState` plus terminal width. Snapshot refresh on launch and on `r`; a 10-second background tick re-reads only `~/.claude/jobs/` for active-session badges. Spec at `docs/specs/2026-05-16-wt-dashboard-design.md`.
 
-**Tech Stack:** Rust 2021 edition. `ratatui 0.29`, `crossterm 0.28`, `anyhow 1`, `serde 1` + `serde_json 1`, `jiff 0.1`, `dirs 5`, `base64 0.22`. Shell out to system `git`. No tokio, no libgit2.
+**Tech Stack:** Rust 2021 edition. `ratatui 0.29`, `crossterm 0.28`, `anyhow 1`, `serde 1` + `serde_json 1`, `dirs 5`, `base64 0.22`. Shell out to system `git`. No tokio, no libgit2.
 
 ---
 
@@ -161,7 +161,6 @@ crossterm = "0.28"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-jiff = "0.1"
 dirs = "5"
 base64 = "0.22"
 
@@ -303,6 +302,7 @@ pub struct AppState {
     pub last_refresh: std::time::Instant,
     pub status: StatusLine,
     pub expanded: std::collections::HashSet<String>, // project names that are expanded
+    pub generation: u64, // bumped on `r`; tick messages older than this are dropped
 }
 
 #[derive(Debug, Clone, Default)]
@@ -899,16 +899,61 @@ fn bare_worktree(path: &Path) -> Worktree {
     }
 }
 
-/// Populate the dirty/ahead/behind/has_upstream fields on each worktree.
+/// Populate dirty/ahead/behind/has_upstream/last_commit on each worktree.
+/// Runs per-repo git calls in parallel via `std::thread::scope` so total
+/// wall time is roughly the slowest single repo rather than the sum.
 pub fn enrich_with_status(projects: &mut [Project]) {
-    for p in projects.iter_mut() {
-        for wt in p.worktrees.iter_mut() {
-            if let Ok(s) = git::run_status_v2(&wt.path) {
-                wt.branch = s.branch.or(wt.branch.take());
-                wt.dirty = s.dirty;
-                wt.ahead = s.ahead;
-                wt.behind = s.behind;
-                wt.has_upstream = s.upstream.is_some();
+    use crate::model::CommitSummary;
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    // (project_idx, worktree_idx, owned path)
+    let work: Vec<(usize, usize, std::path::PathBuf)> = projects
+        .iter()
+        .enumerate()
+        .flat_map(|(i, p)| {
+            p.worktrees
+                .iter()
+                .enumerate()
+                .map(move |(j, w)| (i, j, w.path.clone()))
+        })
+        .collect();
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::scope(|s| {
+        for (i, j, path) in work {
+            let tx = tx.clone();
+            s.spawn(move || {
+                let status = git::run_status_v2(&path).ok();
+                let log = git::run_log_recent(&path, 1).ok();
+                let _ = tx.send((i, j, status, log));
+            });
+        }
+        drop(tx);
+    });
+
+    let now_secs: i64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    while let Ok((i, j, status, log)) = rx.recv() {
+        if let Some(s) = status {
+            let wt = &mut projects[i].worktrees[j];
+            wt.branch = s.branch.or(wt.branch.take());
+            wt.dirty = s.dirty;
+            wt.ahead = s.ahead;
+            wt.behind = s.behind;
+            wt.has_upstream = s.upstream.is_some();
+        }
+        if let Some(entries) = log {
+            if let Some(e) = entries.first() {
+                let age_secs = (now_secs - e.committed_at).max(0) as u64;
+                projects[i].worktrees[j].last_commit = Some(CommitSummary {
+                    short_sha: e.short_sha.clone(),
+                    subject: e.subject.clone(),
+                    age: Duration::from_secs(age_secs),
+                });
             }
         }
     }
@@ -1106,47 +1151,61 @@ Append to the `tests` module:
 
 ```rust
     #[test]
-    fn encoded_cwd_round_trip() {
+    fn encode_cwd_replaces_slashes() {
         let cwd = Path::new("/home/jane/projects/thelma");
         assert_eq!(encode_cwd(cwd), "-home-jane-projects-thelma");
-        let decoded = decode_cwd("-home-jane-projects-thelma");
-        assert_eq!(decoded, PathBuf::from("/home/jane/projects/thelma"));
     }
 
     #[test]
-    fn scan_interactive_caps_at_five_per_dir() {
+    fn encode_cwd_handles_hyphens_in_dir_names() {
+        // The reviewer flagged: decoding is irreversible, so we don't decode.
+        // We only ever go path -> encoded -> dir lookup. This test pins that
+        // a path with a literal hyphen still encodes deterministically.
+        let cwd = Path::new("/home/jane/projects/foo-bar");
+        assert_eq!(encode_cwd(cwd), "-home-jane-projects-foo-bar");
+    }
+
+    #[test]
+    fn scan_interactive_caps_at_five_per_known_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("-home-jane-projects-thelma");
+        let known = PathBuf::from("/home/jane/projects/thelma");
+        let dir = tmp.path().join(encode_cwd(&known));
         fs::create_dir_all(&dir).unwrap();
         for i in 0..10 {
             let f = dir.join(format!("session-{i:02}.jsonl"));
             fs::write(&f, "{}\n").unwrap();
-            // we don't control mtime here; the cap still applies after sort
         }
-        let out = scan_interactive(tmp.path()).unwrap();
-        // 10 files all for one cwd, capped at 5
-        let mine: Vec<_> = out.iter().filter(|s| match s {
-            Session::Interactive { cwd, .. } => cwd == &PathBuf::from("/home/jane/projects/thelma"),
-            _ => false,
-        }).collect();
+        let out = scan_interactive(tmp.path(), &[known.clone()]).unwrap();
+        let mine: Vec<_> = out.iter().filter(|s| matches!(s,
+            Session::Interactive { cwd, .. } if cwd == &known)).collect();
         assert_eq!(mine.len(), 5);
+    }
+
+    #[test]
+    fn scan_interactive_ignores_unknown_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("-some-unknown-project");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.jsonl"), "{}\n").unwrap();
+        let out = scan_interactive(tmp.path(), &[PathBuf::from("/home/jane/projects/thelma")]).unwrap();
+        assert!(out.is_empty());
     }
 ```
 
-- [ ] **Step 2: Add encode/decode helpers and stub**
+- [ ] **Step 2: Add `encode_cwd` and stub for `scan_interactive`**
 
 In `src/sessions.rs`, near the top:
 
 ```rust
+/// Encode an absolute path to the directory name used under `~/.claude/projects/`.
+/// This direction is well-defined; the reverse (decoding `foo-bar` back to a path
+/// containing a `/` or `-`) is ambiguous, so we never decode. We encode every
+/// known worktree path and look up the exact subdir.
 pub fn encode_cwd(p: &Path) -> String {
     p.to_string_lossy().replace('/', "-")
 }
 
-pub fn decode_cwd(encoded: &str) -> PathBuf {
-    PathBuf::from(encoded.replace('-', "/"))
-}
-
-pub fn scan_interactive(projects_dir: &Path) -> Result<Vec<Session>> {
+pub fn scan_interactive(projects_dir: &Path, known_worktrees: &[PathBuf]) -> Result<Vec<Session>> {
     todo!()
 }
 ```
@@ -1157,7 +1216,7 @@ pub fn scan_interactive(projects_dir: &Path) -> Result<Vec<Session>> {
 cargo test sessions::
 ```
 
-Expected: `encoded_cwd_round_trip` may pass; `scan_interactive_caps_at_five_per_dir` fails at todo.
+Expected: encode tests pass; both `scan_interactive_*` tests fail at todo.
 
 - [ ] **Step 4: Implement `scan_interactive`**
 
@@ -1166,21 +1225,14 @@ Replace `todo!()` with:
 ```rust
 use crate::model::SessionState;
 
-pub fn scan_interactive(projects_dir: &Path) -> Result<Vec<Session>> {
-    let mut all_by_cwd: std::collections::HashMap<PathBuf, Vec<Session>> = Default::default();
-    let read = match std::fs::read_dir(projects_dir) {
-        Ok(r) => r,
-        Err(_) => return Ok(Vec::new()),
-    };
+pub fn scan_interactive(projects_dir: &Path, known_worktrees: &[PathBuf]) -> Result<Vec<Session>> {
+    let mut out = Vec::new();
     let cutoff = SystemTime::now()
         .checked_sub(Duration::from_secs(60 * 60 * 24 * 30))
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    for entry in read.filter_map(|e| e.ok()) {
-        let name = entry.file_name();
-        let Some(name_str) = name.to_str() else { continue };
-        let cwd = decode_cwd(name_str);
-        let sub = entry.path();
+    for known in known_worktrees {
+        let sub = projects_dir.join(encode_cwd(known));
         if !sub.is_dir() { continue; }
 
         let files_read = match std::fs::read_dir(&sub) {
@@ -1203,16 +1255,16 @@ pub fn scan_interactive(projects_dir: &Path) -> Result<Vec<Session>> {
             sessions_here.push((mt, Session::Interactive {
                 id: stem,
                 summary,
-                cwd: cwd.clone(),
+                cwd: known.clone(),
                 age,
                 state: SessionState::Active,
             }));
         }
         sessions_here.sort_by(|a, b| b.0.cmp(&a.0));  // newest first
         sessions_here.truncate(5);
-        all_by_cwd.entry(cwd).or_default().extend(sessions_here.into_iter().map(|(_, s)| s));
+        out.extend(sessions_here.into_iter().map(|(_, s)| s));
     }
-    Ok(all_by_cwd.into_values().flatten().collect())
+    Ok(out)
 }
 
 fn first_summary_line(path: &Path) -> Option<String> {
@@ -1553,7 +1605,7 @@ Replace `todo!()`:
 ```rust
 pub fn choose_columns(width: u16) -> Columns {
     if width < 30 {
-        Columns { show_branch: false, name_max: 8, compact_icons: true, too_narrow: width < 25 }
+        Columns { show_branch: false, name_max: 8, compact_icons: true, too_narrow: true }
     } else if width < 40 {
         Columns { show_branch: false, name_max: 12, compact_icons: true, too_narrow: false }
     } else if width < 60 {
@@ -1598,7 +1650,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem},
     Frame,
 };
 
@@ -1610,8 +1662,6 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
             if focused { theme::pane_header_focused() } else { theme::pane_header() }));
 
     let mut items: Vec<ListItem> = Vec::new();
-    let mut hilite_index: Option<usize> = None;
-    let mut idx = 0usize;
 
     for p in &state.projects {
         let any_visible = project_has_visible_worktrees(p, state);
@@ -1619,31 +1669,24 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
         let expanded = state.expanded.contains(&p.name);
         let marker = if expanded { "▼" } else { "▸" };
         items.push(ListItem::new(Line::from(vec![
-            row_prefix(state, &TreePath::project_header(p), &mut hilite_index, idx),
+            row_prefix(state, &TreePath::project_header(p)),
             Span::raw(format!("{marker} {} ({})", p.name, p.worktrees.len())),
         ])));
-        idx += 1;
 
         if expanded {
             for wt in &p.worktrees {
                 if !worktree_visible(wt, state) { continue; }
-                items.push(ListItem::new(Line::from(worktree_spans(state, p, wt, columns,
-                    &mut hilite_index, idx))));
-                idx += 1;
+                items.push(ListItem::new(Line::from(worktree_spans(state, p, wt, columns))));
             }
         }
     }
 
-    let mut list_state = ListState::default();
-    list_state.select(hilite_index);
-    let list = List::new(items).block(block);
-    f.render_stateful_widget(list, area, &mut list_state);
+    f.render_widget(List::new(items).block(block), area);
 }
 
-fn row_prefix(state: &AppState, path: &TreePath, hilite: &mut Option<usize>, idx: usize) -> Span<'static> {
+fn row_prefix(state: &AppState, path: &TreePath) -> Span<'static> {
     let is_sel = state.selected.as_ref() == Some(path);
     if is_sel {
-        *hilite = Some(idx);
         Span::styled(FOCUS_MARKER, theme::active_row())
     } else {
         Span::raw(UNFOCUSED_PREFIX)
@@ -1655,12 +1698,9 @@ fn worktree_spans<'a>(
     p: &Project,
     wt: &Worktree,
     cols: Columns,
-    hilite: &mut Option<usize>,
-    idx: usize,
 ) -> Vec<Span<'a>> {
     let path = TreePath::worktree_row(p, wt);
     let is_sel = state.selected.as_ref() == Some(&path);
-    if is_sel { *hilite = Some(idx); }
     let row_style: Style = if is_sel { theme::active_row() } else { Style::default() };
     let prefix = if is_sel { FOCUS_MARKER } else { UNFOCUSED_PREFIX };
 
@@ -2008,17 +2048,22 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Terminal;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub fn initial_state(projects_root: PathBuf) -> Result<AppState> {
     let mut projects = discovery::scan(&projects_root)?;
     discovery::enrich_with_status(&mut projects);
 
+    let known: Vec<PathBuf> = projects.iter()
+        .flat_map(|p| p.worktrees.iter().map(|w| w.path.clone()))
+        .collect();
     let jobs_dir = dirs::home_dir().unwrap_or_default().join(".claude/jobs");
     let proj_dir = dirs::home_dir().unwrap_or_default().join(".claude/projects");
     let jobs = sessions::scan_jobs(&jobs_dir).unwrap_or_default();
-    let interactive = sessions::scan_interactive(&proj_dir).unwrap_or_default();
+    let interactive = sessions::scan_interactive(&proj_dir, &known).unwrap_or_default();
     sessions::attach_to_worktrees(&mut projects, jobs);
     sessions::attach_to_worktrees(&mut projects, interactive);
 
@@ -2033,7 +2078,32 @@ pub fn initial_state(projects_root: PathBuf) -> Result<AppState> {
         last_refresh: Instant::now(),
         status: StatusLine::default(),
         expanded,
+        generation: 0,
     })
+}
+
+/// Refresh in place, preserving user state (selection, filter, search, focus, expansion).
+/// Increments `generation` so in-flight tick messages can be dropped.
+pub fn refresh_in_place(state: &mut AppState, projects_root: PathBuf) -> Result<()> {
+    let mut projects = discovery::scan(&projects_root)?;
+    discovery::enrich_with_status(&mut projects);
+
+    let known: Vec<PathBuf> = projects.iter()
+        .flat_map(|p| p.worktrees.iter().map(|w| w.path.clone()))
+        .collect();
+    let jobs_dir = dirs::home_dir().unwrap_or_default().join(".claude/jobs");
+    let proj_dir = dirs::home_dir().unwrap_or_default().join(".claude/projects");
+    let jobs = sessions::scan_jobs(&jobs_dir).unwrap_or_default();
+    let interactive = sessions::scan_interactive(&proj_dir, &known).unwrap_or_default();
+    sessions::attach_to_worktrees(&mut projects, jobs);
+    sessions::attach_to_worktrees(&mut projects, interactive);
+
+    state.projects = projects;
+    state.last_refresh = Instant::now();
+    state.generation = state.generation.wrapping_add(1);
+    // `selected` is a TreePath identified by project name + worktree path,
+    // so it re-resolves correctly against the new projects vec. No reset needed.
+    Ok(())
 }
 
 fn first_visible(projects: &[Project], _filter: &ActiveFilter) -> Option<TreePath> {
@@ -2046,6 +2116,7 @@ pub fn run<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     state: &mut AppState,
     tick_rx: Receiver<TickMsg>,
+    gen_counter: Arc<AtomicU64>,
 ) -> Result<RunOutcome> {
     loop {
         terminal.draw(|f| render_frame(f, state))?;
@@ -2057,8 +2128,12 @@ pub fn run<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                let prev_gen = state.generation;
                 if let Some(outcome) = handle_key(state, key)? {
                     return Ok(outcome);
+                }
+                if state.generation != prev_gen {
+                    gen_counter.store(state.generation, Ordering::SeqCst);
                 }
             }
         }
@@ -2073,13 +2148,14 @@ pub enum RunOutcome {
 
 #[derive(Debug)]
 pub enum TickMsg {
-    JobsRefreshed(Vec<crate::model::Session>),
+    JobsRefreshed { generation: u64, sessions: Vec<crate::model::Session> },
 }
 
 fn apply_tick(state: &mut AppState, msg: TickMsg) {
     match msg {
-        TickMsg::JobsRefreshed(sessions) => {
-            // Replace background-job sessions in place.
+        TickMsg::JobsRefreshed { generation, sessions } => {
+            // Drop stale messages that started before the last `r`.
+            if generation != state.generation { return; }
             for p in state.projects.iter_mut() {
                 for wt in p.worktrees.iter_mut() {
                     wt.sessions.retain(|s| !matches!(s,
@@ -2095,7 +2171,7 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState) {
     let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(36), Constraint::Length(1)])
+        .constraints([Constraint::Percentage(60), Constraint::Min(0), Constraint::Length(1)])
         .split(area);
     let cols = layout::choose_columns(area.width);
 
@@ -2122,10 +2198,8 @@ fn render_footer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, state: &Ap
 fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<Option<RunOutcome>> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) => Ok(Some(RunOutcome::Quit)),
-        (KeyCode::Char('c'), m) if !m.contains(KeyModifiers::CONTROL) => {
-            copy_current(state)?;
-            Ok(None)
-        }
+        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => Ok(Some(RunOutcome::Quit)),
+        (KeyCode::Char('c'), _) => { copy_current(state)?; Ok(None) }
         (KeyCode::Char('o'), _) => {
             if let Some(cmd) = launch_for_selected(state) {
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
@@ -2133,7 +2207,7 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<Option<RunOutcome>>
             Ok(None)
         }
         (KeyCode::Char('r'), _) => {
-            *state = initial_state(default_projects_root())?;
+            refresh_in_place(state, default_projects_root())?;
             state.status.say("refreshed");
             Ok(None)
         }
@@ -2144,13 +2218,31 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<Option<RunOutcome>>
             };
             Ok(None)
         }
+        (KeyCode::Enter, _) => { handle_enter(state); Ok(None) }
         (KeyCode::Down, _) | (KeyCode::Char('j'), _) => { move_selection(state, 1); Ok(None) }
-        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => { move_selection(state, -1); Ok(None) }
-        (KeyCode::Tab, _) => {
-            state.focus = match state.focus { Pane::Worktrees => Pane::Sessions, Pane::Sessions => Pane::Worktrees };
-            Ok(None)
-        }
+        (KeyCode::Up, _)   | (KeyCode::Char('k'), _) => { move_selection(state, -1); Ok(None) }
+        (KeyCode::Tab, _)     => { state.focus = next_pane(state.focus); Ok(None) }
+        (KeyCode::BackTab, _) => { state.focus = next_pane(state.focus); Ok(None) }
         _ => Ok(None),
+    }
+}
+
+fn next_pane(p: Pane) -> Pane {
+    match p { Pane::Worktrees => Pane::Sessions, Pane::Sessions => Pane::Worktrees }
+}
+
+/// Enter on a project header toggles expansion. Enter on a worktree row
+/// shifts focus to the sessions pane (and the user can Tab back).
+fn handle_enter(state: &mut AppState) {
+    let Some(sel) = state.selected.clone() else { return };
+    if sel.worktree.is_none() {
+        if state.expanded.contains(&sel.project) {
+            state.expanded.remove(&sel.project);
+        } else {
+            state.expanded.insert(sel.project.clone());
+        }
+    } else {
+        state.focus = Pane::Sessions;
     }
 }
 
@@ -2230,7 +2322,8 @@ mod sessions;
 mod ui;
 
 use anyhow::Result;
-use std::sync::mpsc;
+use std::sync::atomic::AtomicU64;
+use std::sync::{mpsc, Arc};
 
 fn main() -> Result<()> {
     let projects_root = dirs::home_dir().unwrap_or_default().join("projects");
@@ -2244,8 +2337,9 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     let (_tick_tx, tick_rx) = mpsc::channel::<app::TickMsg>();
+    let gen_counter = Arc::new(AtomicU64::new(state.generation));
 
-    let result = app::run(&mut terminal, &mut state, tick_rx);
+    let result = app::run(&mut terminal, &mut state, tick_rx, gen_counter);
 
     crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
     crossterm::terminal::disable_raw_mode()?;
@@ -2325,6 +2419,7 @@ pub fn run<B: ratatui::backend::Backend>(
     state: &mut AppState,
     ui_state: &mut UiState,
     tick_rx: Receiver<TickMsg>,
+    gen_counter: Arc<AtomicU64>,
 ) -> Result<RunOutcome> {
     loop {
         terminal.draw(|f| render_frame(f, state, ui_state))?;
@@ -2335,8 +2430,12 @@ pub fn run<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                let prev_gen = state.generation;
                 if let Some(outcome) = handle_key(state, ui_state, key)? {
                     return Ok(outcome);
+                }
+                if state.generation != prev_gen {
+                    gen_counter.store(state.generation, Ordering::SeqCst);
                 }
             }
         }
@@ -2372,7 +2471,8 @@ fn handle_key(state: &mut AppState, ui: &mut UiState, key: KeyEvent) -> Result<O
     }
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) => Ok(Some(RunOutcome::Quit)),
-        (KeyCode::Char('c'), m) if !m.contains(KeyModifiers::CONTROL) => { copy_current(state)?; Ok(None) }
+        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => Ok(Some(RunOutcome::Quit)),
+        (KeyCode::Char('c'), _) => { copy_current(state)?; Ok(None) }
         (KeyCode::Char('o'), _) => {
             if let Some(cmd) = launch_for_selected(state) {
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
@@ -2380,8 +2480,7 @@ fn handle_key(state: &mut AppState, ui: &mut UiState, key: KeyEvent) -> Result<O
             Ok(None)
         }
         (KeyCode::Char('r'), _) => {
-            let new_state = initial_state(default_projects_root())?;
-            *state = new_state;
+            refresh_in_place(state, default_projects_root())?;
             state.status.say("refreshed");
             Ok(None)
         }
@@ -2401,12 +2500,11 @@ fn handle_key(state: &mut AppState, ui: &mut UiState, key: KeyEvent) -> Result<O
             }
             Ok(None)
         }
+        (KeyCode::Enter, _) => { handle_enter(state); Ok(None) }
         (KeyCode::Down, _) | (KeyCode::Char('j'), _) => { move_selection(state, 1); Ok(None) }
-        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => { move_selection(state, -1); Ok(None) }
-        (KeyCode::Tab, _) => {
-            state.focus = match state.focus { Pane::Worktrees => Pane::Sessions, Pane::Sessions => Pane::Worktrees };
-            Ok(None)
-        }
+        (KeyCode::Up, _)   | (KeyCode::Char('k'), _) => { move_selection(state, -1); Ok(None) }
+        (KeyCode::Tab, _)     => { state.focus = next_pane(state.focus); Ok(None) }
+        (KeyCode::BackTab, _) => { state.focus = next_pane(state.focus); Ok(None) }
         _ => Ok(None),
     }
 }
@@ -2506,8 +2604,9 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     let (_tick_tx, tick_rx) = mpsc::channel::<app::TickMsg>();
+    let gen_counter = Arc::new(AtomicU64::new(state.generation));
 
-    let result = app::run(&mut terminal, &mut state, &mut ui_state, tick_rx);
+    let result = app::run(&mut terminal, &mut state, &mut ui_state, tick_rx, gen_counter);
 
     crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
     crossterm::terminal::disable_raw_mode()?;
@@ -2550,17 +2649,20 @@ git commit -m "feat(app): search filter (/) and commit-log modal (g)"
 use crate::app::TickMsg;
 use crate::sessions;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-pub fn spawn(tx: Sender<TickMsg>) -> thread::JoinHandle<()> {
+pub fn spawn(tx: Sender<TickMsg>, gen_counter: Arc<AtomicU64>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let jobs_dir: PathBuf = dirs::home_dir().unwrap_or_default().join(".claude/jobs");
         loop {
             thread::sleep(Duration::from_secs(10));
+            let generation = gen_counter.load(Ordering::SeqCst);
             let jobs = sessions::scan_jobs(&jobs_dir).unwrap_or_default();
-            if tx.send(TickMsg::JobsRefreshed(jobs)).is_err() {
+            if tx.send(TickMsg::JobsRefreshed { generation, sessions: jobs }).is_err() {
                 break;
             }
         }
@@ -2585,9 +2687,10 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     let (tick_tx, tick_rx) = mpsc::channel::<app::TickMsg>();
-    let _tick_handle = tick::spawn(tick_tx);
+    let gen_counter = Arc::new(AtomicU64::new(state.generation));
+    let _tick_handle = tick::spawn(tick_tx, Arc::clone(&gen_counter));
 
-    let result = app::run(&mut terminal, &mut state, &mut ui_state, tick_rx);
+    let result = app::run(&mut terminal, &mut state, &mut ui_state, tick_rx, gen_counter);
 
     crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
     crossterm::terminal::disable_raw_mode()?;
@@ -2755,7 +2858,7 @@ No gaps.
 **3. Type consistency**
 
 - `Worktree`, `Project`, `Session`, `TreePath`, `AppState`, `StatusLine` are defined in Task 3 and used identically throughout.
-- `TickMsg::JobsRefreshed(Vec<Session>)` defined in Task 14, sent in Task 16.
+- `TickMsg::JobsRefreshed { generation, sessions }` defined in Task 14, sent in Task 16, consumed in `apply_tick` (Task 14) which drops messages whose generation does not match `state.generation`.
 - `RunOutcome` defined in Task 14, returned consistently from Task 15.
 - `Columns` struct defined in Task 11, consumed by Task 12 and Task 14.
 - Function name `actions::copy_to_clipboard` consistent between Task 9 (definition) and Task 14 (caller).
