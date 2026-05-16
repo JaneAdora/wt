@@ -1,3 +1,4 @@
+mod discovery;
 mod git;
 mod model;
 
