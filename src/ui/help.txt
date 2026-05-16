@@ -1,10 +1,28 @@
 wt :: Worktree Wizard
 
-NAVIGATION
-  ↑ ↓  or  j k       Move selection in focused pane
-  Tab / Shift-Tab     Switch focus between WORKTREES and SESSIONS
+THE LAYOUT
+  The screen has two panes stacked vertically:
+    WORKTREES (top)  : your projects and their worktrees
+    SESSIONS  (bot)  : Claude sessions attached to the selected worktree
+  The focused pane has a bright pink border and a magenta title.
+
+SWITCHING PANES
+  1                   Focus the WORKTREES pane
+  2                   Focus the SESSIONS pane
+  Tab  /  Shift-Tab   Cycle focus between the two panes
+                      (Both directions are the same when there are 2 panes.
+                      Use 1 / 2 if Tab is awkward on your terminal.)
+
+NAVIGATION (within the focused pane)
+  ↑ ↓  or  j k       Move selection up/down
+  ← →  or  h l       Tree navigation (worktrees pane):
+                        Right on collapsed project: expand
+                        Right on expanded project:  step into first worktree
+                        Right on worktree row:      focus the SESSIONS pane
+                        Left  on expanded project:  collapse
+                        Left  on worktree row:      jump up to parent project
   Enter               Project row: expand/collapse
-                      Worktree row: focus the sessions pane
+                      Worktree row: focus the SESSIONS pane
   e  or  E            Expand all / collapse all (toggle)
 
 ACTIONS
@@ -14,14 +32,14 @@ ACTIONS
                       (the "do it" key; assumes you've reviewed)
 
 LAUNCH COMMAND SHAPE
-  Worktree selected:  cd PATH && claude [--dangerously-skip-permissions]
-  Interactive sess:   cd PATH && claude --resume ID [--dangerously-skip-permissions]
-  Background job:     cd PATH && claude [--dangerously-skip-permissions]
-                      (--resume isn't meaningful from outside the harness)
+  Worktree selected:  cd PATH && claude
+  Interactive sess:   cd PATH && claude --resume ID
+  Background job:     cd PATH && claude
+  (Append --dangerously-skip-permissions when using `d` instead of `o`/`c`.)
 
 VIEWS
   r                   Refresh (preserves selection, filter, search, expansion)
-  /                   Filter; type substring, Enter to apply, Esc to cancel
+  /                   Filter by substring; type, Enter to apply, Esc to cancel
   a                   Toggle active-only filter (default on)
   t                   Cycle interactive-session window: 30d > all > 7d
   g                   Show commit log for the selected worktree
@@ -30,10 +48,10 @@ VIEWS
 DELETE
   x                   Delete the selected background job (state.json + dir).
                       Two-press confirm: first press arms, second within
-                      3s deletes. Refuses while job is Running.
+                      3 seconds deletes. Refuses while job is Running.
 
 EXIT
-  q  or  Ctrl-C       Quit
+  q  or  Ctrl-C       Quit (saves UI state)
 
 IN A MODAL (log or help)
   j k  or  ↑ ↓        Scroll one line
@@ -42,6 +60,10 @@ IN A MODAL (log or help)
   g / Home            Jump to top
   G / End             Jump to bottom
   Esc / q / Enter     Close modal
+
+LEAVING SEARCH (the / mode)
+  Esc                 Cancel; the filter clears
+  Enter               Apply; the filter sticks until you press / again
 
 DISCOVERY SCOPE
   By default, wt scans:

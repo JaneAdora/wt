@@ -242,7 +242,7 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
 }
 
 const FOOTER_KEYS: &str =
-    "? help · ↑↓/jk · Tab · ↵ · e expand-all · c copy · d launch · o exit · r refresh · / filter · a active · t window · g log · x delete-bg · q quit";
+    "? help · 1/2 pane · ↑↓/jk · ←→/hl tree · ↵ · e expand-all · c copy · d launch · o exit · r refresh · / filter · a active · t window · g log · x del-bg · q quit";
 
 /// How many rows the bottom footer needs at this terminal width and mode.
 /// Modal/help modes return 0 (their own title_bottom hosts the hint).
@@ -459,12 +459,33 @@ fn handle_key(
             move_selection(state, -1);
             Ok(None)
         }
-        (KeyCode::Tab, _) => {
+        (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
+            handle_expand(state);
+            Ok(None)
+        }
+        (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
+            handle_collapse(state);
+            Ok(None)
+        }
+        (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
             state.focus = next_pane(state.focus);
             Ok(None)
         }
-        (KeyCode::BackTab, _) => {
-            state.focus = next_pane(state.focus);
+        // Direct pane jumps. Easier than Tab on phone keyboards where Tab
+        // is buried or hands behaviour to the keyboard manager (Termius).
+        (KeyCode::Char('1'), _) => {
+            state.focus = Pane::Worktrees;
+            Ok(None)
+        }
+        (KeyCode::Char('2'), _) => {
+            state.focus = Pane::Sessions;
+            if state.selected_session.is_none() {
+                if let Some(wt) = current_worktree(state) {
+                    if !wt.sessions.is_empty() {
+                        state.selected_session = Some(0);
+                    }
+                }
+            }
             Ok(None)
         }
         _ => Ok(None),
@@ -580,6 +601,60 @@ fn toggle_expand_all(state: &mut AppState) {
     } else {
         state.expanded = state.projects.iter().map(|p| p.name.clone()).collect();
         state.status.say("expanded all");
+    }
+}
+
+/// Right arrow / l: expand a collapsed project; on an already-expanded
+/// project, step into its first worktree; on a worktree row, focus the
+/// sessions pane (mirrors Enter).
+fn handle_expand(state: &mut AppState) {
+    if state.focus != Pane::Worktrees {
+        return;
+    }
+    let Some(sel) = state.selected.clone() else {
+        return;
+    };
+    if sel.worktree.is_none() {
+        if state.expanded.contains(&sel.project) {
+            // Already expanded: step to first child.
+            if let Some(p) = state.projects.iter().find(|p| p.name == sel.project) {
+                if let Some(first_wt) = p.worktrees.first() {
+                    state.selected = Some(TreePath::worktree_row(p, first_wt));
+                    state.selected_session = None;
+                }
+            }
+        } else {
+            state.expanded.insert(sel.project.clone());
+        }
+    } else {
+        state.focus = Pane::Sessions;
+        if state.selected_session.is_none() {
+            if let Some(wt) = current_worktree(state) {
+                if !wt.sessions.is_empty() {
+                    state.selected_session = Some(0);
+                }
+            }
+        }
+    }
+}
+
+/// Left arrow / h: collapse an expanded project; on a worktree row, move
+/// selection up to the parent project header (without collapsing).
+fn handle_collapse(state: &mut AppState) {
+    if state.focus != Pane::Worktrees {
+        return;
+    }
+    let Some(sel) = state.selected.clone() else {
+        return;
+    };
+    if sel.worktree.is_none() {
+        state.expanded.remove(&sel.project);
+    } else {
+        state.selected = Some(TreePath {
+            project: sel.project,
+            worktree: None,
+        });
+        state.selected_session = None;
     }
 }
 
