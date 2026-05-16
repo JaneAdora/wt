@@ -197,12 +197,29 @@ Discovery and git are best-effort. Failures degrade gracefully, never panic:
 
 ## Theme
 
-Default terminal palette with Rep Cap accents applied to two roles only:
+Night-mode-forward, all-foreground accents. No background fills (those compete with terminal themes and look heavy on mobile). The dashboard assumes a dark terminal background but degrades cleanly on light themes because every accent is a foreground color on the terminal's own background.
 
-- **Active row highlight:** Rep Cap pink `#e88b9f` background.
-- **Pane headers ("WORKTREES", "SESSIONS · ..."):** Rep Cap dark purple `#2e2769` foreground.
+**Palette:**
 
-Everything else uses the terminal's own foreground/background. This keeps the binary at home in light, dark, and Solarized-ish themes alike.
+| Role                              | Color                          | Weight   |
+|-----------------------------------|--------------------------------|----------|
+| Pane headers ("WORKTREES", etc.)  | Lavender `#c5a3ff`             | Bold     |
+| Active/focused row                | Rep Cap pink `#e88b9f`         | Bold + `▸ ` prefix marker |
+| Dirty / ahead / behind indicators | Rep Cap pink `#e88b9f`         | Regular  |
+| Session count badge (e.g. `●3`)   | Magenta `#ff6ec7`              | Regular  |
+| "Last commit" footer line         | Lavender `#c5a3ff`, dim        | Dim      |
+| Borders, separators, body text    | Terminal default               | Default  |
+| Status line ("copied", errors)    | Magenta `#ff6ec7` (transient)  | Regular  |
+
+**Why the three accent colors:**
+
+- Lavender (`#c5a3ff`) for structural elements (headers, footer line). Quieter than the pink, so it recedes.
+- Rep Cap pink (`#e88b9f`) for content emphasis (active row, status icons). Brand-faithful.
+- Magenta (`#ff6ec7`) for transient feedback (session count badge, "copied" toast). Brightest of the three, so it draws the eye.
+
+Rep Cap dark purple `#2e2769` is deliberately not used as a foreground; it's invisible on dark terminal backgrounds. It can return in a future "light mode" theme as a header color.
+
+**Selection vs focus:** the focused pane's border is bold (terminal default); the selected row within it gets the pink fg + `▸ ` marker. This works without any background fill.
 
 ## Testing
 
