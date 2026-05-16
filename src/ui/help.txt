@@ -1,0 +1,49 @@
+wt — Worktree Wizard
+
+NAVIGATION
+  ↑ ↓  or  j k       Move selection in focused pane
+  Tab / Shift-Tab     Switch focus between WORKTREES and SESSIONS
+  Enter               Project row: expand/collapse
+                      Worktree row: focus the sessions pane
+
+ACTIONS
+  c                   Copy launch command to clipboard (OSC 52)
+  o                   Print launch command to stdout and exit
+  D                   Print + exit with --dangerously-skip-permissions
+                      (the "do it" key — assumes you've reviewed)
+
+LAUNCH COMMAND SHAPE
+  Worktree selected:  cd PATH && claude [--dangerously-skip-permissions]
+  Interactive sess:   cd PATH && claude --resume ID [--dangerously-skip-permissions]
+  Background job:     cd PATH && claude [--dangerously-skip-permissions]
+                      (--resume isn't meaningful from outside the harness)
+
+VIEWS
+  r                   Refresh (preserves selection, filter, search, expansion)
+  /                   Filter; type substring, Enter to apply, Esc to cancel
+  a                   Toggle active-only filter (default on)
+  g                   Show commit log for the selected worktree
+  ?                   Show this help
+
+EXIT
+  q  or  Ctrl-C       Quit
+
+IN A MODAL (log or help)
+  j k  or  ↑ ↓        Scroll one line
+  Space / PgDn        Page down
+  b / PgUp            Page up
+  g / Home            Jump to top
+  G / End             Jump to bottom
+  Esc / q / Enter     Close modal
+
+DISCOVERY SCOPE
+  By default, wt scans:
+    ~/projects/
+    ~/Projects/
+    ~/Projects/clients/
+  Override with WT_ROOTS env var, colon-separated (like PATH):
+    WT_ROOTS=~/projects:~/Projects:~/code wt
+
+ABOUT
+  Single-host dashboard. Built for one terminal tab, designed for mobile
+  SSH (Blink, Termius) via OSC 52 clipboard and width-collapsing.

@@ -7,11 +7,20 @@ pub fn osc52_encode(s: &str) -> String {
     format!("\x1b]52;c;{b64}\x07")
 }
 
-pub fn launch_command_for(cwd: &std::path::Path, resume_id: Option<&str>) -> String {
+pub fn launch_command_for(
+    cwd: &std::path::Path,
+    resume_id: Option<&str>,
+    dangerous: bool,
+) -> String {
     let cwd_display = cwd.to_string_lossy();
+    let dangerous_flag = if dangerous {
+        " --dangerously-skip-permissions"
+    } else {
+        ""
+    };
     match resume_id {
-        Some(id) => format!("cd {cwd_display} && claude --resume {id}"),
-        None => format!("cd {cwd_display} && claude"),
+        Some(id) => format!("cd {cwd_display} && claude --resume {id}{dangerous_flag}"),
+        None => format!("cd {cwd_display} && claude{dangerous_flag}"),
     }
 }
 
@@ -42,7 +51,7 @@ mod tests {
 
     #[test]
     fn launch_command_no_resume() {
-        let s = launch_command_for(Path::new("/home/jane/projects/thelma"), None);
+        let s = launch_command_for(Path::new("/home/jane/projects/thelma"), None, false);
         assert_eq!(s, "cd /home/jane/projects/thelma && claude");
     }
 
@@ -51,7 +60,23 @@ mod tests {
         let s = launch_command_for(
             Path::new("/home/jane/projects/thelma"),
             Some("abc-123"),
+            false,
         );
         assert_eq!(s, "cd /home/jane/projects/thelma && claude --resume abc-123");
+    }
+
+    #[test]
+    fn launch_command_dangerous_no_resume() {
+        let s = launch_command_for(Path::new("/p/x"), None, true);
+        assert_eq!(s, "cd /p/x && claude --dangerously-skip-permissions");
+    }
+
+    #[test]
+    fn launch_command_dangerous_with_resume() {
+        let s = launch_command_for(Path::new("/p/x"), Some("zzz-1"), true);
+        assert_eq!(
+            s,
+            "cd /p/x && claude --resume zzz-1 --dangerously-skip-permissions"
+        );
     }
 }

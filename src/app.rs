@@ -36,6 +36,9 @@ pub enum InputMode {
         title: String,
         scroll: u16,
     },
+    Help {
+        scroll: u16,
+    },
 }
 
 pub struct UiState {
@@ -184,11 +187,16 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
     crate::ui::sessions::render(f, chunks[1], state);
     render_footer(f, chunks[2], state, cols, ui);
 
-    if let InputMode::Modal { entries, title, scroll } = &ui.mode {
-        // Near-full-screen modal. Better for narrow phone widths and
-        // gives commit subjects room to wrap legibly.
-        let modal_area = centered_rect(area, 94, 90);
-        crate::ui::modal::render(f, modal_area, entries, title, *scroll);
+    match &ui.mode {
+        InputMode::Modal { entries, title, scroll } => {
+            let modal_area = centered_rect(area, 94, 90);
+            crate::ui::modal::render(f, modal_area, entries, title, *scroll);
+        }
+        InputMode::Help { scroll } => {
+            let modal_area = centered_rect(area, 94, 90);
+            crate::ui::modal::render_help(f, modal_area, *scroll);
+        }
+        _ => {}
     }
 }
 
@@ -210,15 +218,14 @@ fn render_footer(
             );
             return;
         }
-        InputMode::Modal { .. } => {
-            // Modal has its own footer hint in title_bottom; leave the
-            // screen-bottom strip blank so we don't double up.
+        InputMode::Modal { .. } | InputMode::Help { .. } => {
+            // Modal/help have their own footer hints in title_bottom.
             return;
         }
         InputMode::Normal => {}
     }
 
-    let mut bits = vec![Span::raw("↑↓/jk move · Tab switch · ↵ open · c copy · o exit · r refresh · / filter · a active · g log · q quit")];
+    let mut bits = vec![Span::raw("? help · ↑↓/jk · Tab · ↵ · c copy · D launch · r refresh · / filter · a active · g log · q")];
     if cols.too_narrow {
         bits.push(Span::raw("  "));
         bits.push(Span::styled("narrow", crate::ui::theme::status_line()));
@@ -285,36 +292,18 @@ fn handle_key(
             return Ok(None);
         }
         InputMode::Modal { entries, scroll, .. } => {
-            let total = entries.len() as u16 * 2; // 2 lines per entry; wraps add more
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
-                    ui.mode = InputMode::Normal;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    *scroll = scroll.saturating_add(1);
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    *scroll = scroll.saturating_sub(1);
-                }
-                KeyCode::PageDown | KeyCode::Char(' ') => {
-                    *scroll = scroll.saturating_add(10).min(total.saturating_sub(1));
-                }
-                KeyCode::PageUp | KeyCode::Char('b') => {
-                    *scroll = scroll.saturating_sub(10);
-                }
-                KeyCode::Char('g') => {
-                    *scroll = 0;
-                }
-                KeyCode::Char('G') | KeyCode::End => {
-                    *scroll = total.saturating_sub(1);
-                }
-                KeyCode::Home => {
-                    *scroll = 0;
-                }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(Some(RunOutcome::Quit));
-                }
-                _ => {}
+            let total = entries.len() as u16 * 2;
+            let close = handle_scroll_key(scroll, total, &key);
+            if close {
+                ui.mode = InputMode::Normal;
+            }
+            return Ok(None);
+        }
+        InputMode::Help { scroll } => {
+            // Help text is ~50 lines; cap scroll on that.
+            let close = handle_scroll_key(scroll, 50, &key);
+            if close {
+                ui.mode = InputMode::Normal;
             }
             return Ok(None);
         }
@@ -327,13 +316,23 @@ fn handle_key(
             Ok(Some(RunOutcome::Quit))
         }
         (KeyCode::Char('c'), _) => {
-            copy_current(state)?;
+            copy_current(state, false)?;
             Ok(None)
         }
         (KeyCode::Char('o'), _) => {
-            if let Some(cmd) = launch_for_selected(state) {
+            if let Some(cmd) = launch_for_selected(state, false) {
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
             }
+            Ok(None)
+        }
+        (KeyCode::Char('D'), _) => {
+            if let Some(cmd) = launch_for_selected(state, true) {
+                return Ok(Some(RunOutcome::PrintAndExit(cmd)));
+            }
+            Ok(None)
+        }
+        (KeyCode::Char('?'), _) => {
+            ui.mode = InputMode::Help { scroll: 0 };
             Ok(None)
         }
         (KeyCode::Char('r'), _) => {
@@ -399,6 +398,36 @@ fn next_pane(p: Pane) -> Pane {
         Pane::Worktrees => Pane::Sessions,
         Pane::Sessions => Pane::Worktrees,
     }
+}
+
+/// Apply a scroll/dismiss key to a modal's scroll offset. Returns true
+/// when the modal should close. Doesn't touch UiState so the caller can
+/// hold a borrow on it.
+#[must_use]
+fn handle_scroll_key(scroll: &mut u16, total: u16, key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => return true,
+        KeyCode::Down | KeyCode::Char('j') => {
+            *scroll = scroll.saturating_add(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            *scroll = scroll.saturating_sub(1);
+        }
+        KeyCode::PageDown | KeyCode::Char(' ') => {
+            *scroll = scroll.saturating_add(10).min(total.saturating_sub(1));
+        }
+        KeyCode::PageUp | KeyCode::Char('b') => {
+            *scroll = scroll.saturating_sub(10);
+        }
+        KeyCode::Char('g') | KeyCode::Home => {
+            *scroll = 0;
+        }
+        KeyCode::Char('G') | KeyCode::End => {
+            *scroll = total.saturating_sub(1);
+        }
+        _ => {}
+    }
+    false
 }
 
 fn handle_enter(state: &mut AppState) {
@@ -489,7 +518,7 @@ mod tests {
     #[test]
     fn launch_for_worktree_focus_uses_no_resume() {
         let state = fixture_state();
-        let cmd = launch_for_selected(&state).unwrap();
+        let cmd = launch_for_selected(&state, false).unwrap();
         assert_eq!(cmd, "cd /p/alpha && claude");
     }
 
@@ -498,7 +527,7 @@ mod tests {
         let mut state = fixture_state();
         state.focus = Pane::Sessions;
         state.selected_session = Some(0); // first session is interactive
-        let cmd = launch_for_selected(&state).unwrap();
+        let cmd = launch_for_selected(&state, false).unwrap();
         assert_eq!(cmd, "cd /p/alpha && claude --resume abc-123");
     }
 
@@ -507,8 +536,27 @@ mod tests {
         let mut state = fixture_state();
         state.focus = Pane::Sessions;
         state.selected_session = Some(1); // second session is bg job
-        let cmd = launch_for_selected(&state).unwrap();
+        let cmd = launch_for_selected(&state, false).unwrap();
         assert_eq!(cmd, "cd /p/alpha && claude");
+    }
+
+    #[test]
+    fn launch_with_dangerous_flag_for_worktree() {
+        let state = fixture_state();
+        let cmd = launch_for_selected(&state, true).unwrap();
+        assert_eq!(cmd, "cd /p/alpha && claude --dangerously-skip-permissions");
+    }
+
+    #[test]
+    fn launch_with_dangerous_flag_for_interactive_session() {
+        let mut state = fixture_state();
+        state.focus = Pane::Sessions;
+        state.selected_session = Some(0);
+        let cmd = launch_for_selected(&state, true).unwrap();
+        assert_eq!(
+            cmd,
+            "cd /p/alpha && claude --resume abc-123 --dangerously-skip-permissions"
+        );
     }
 
     #[test]
@@ -671,17 +719,18 @@ fn move_session_selection(state: &mut AppState, delta: i32) {
     state.selected_session = Some(new);
 }
 
-fn copy_current(state: &mut AppState) -> Result<()> {
-    if let Some(cmd) = launch_for_selected(state) {
+fn copy_current(state: &mut AppState, dangerous: bool) -> Result<()> {
+    if let Some(cmd) = launch_for_selected(state, dangerous) {
         actions::copy_to_clipboard(&cmd)?;
-        state.status.say("copied to clipboard");
+        let msg = if dangerous { "copied (dangerous)" } else { "copied" };
+        state.status.say(msg);
     } else {
         state.status.say("nothing selected");
     }
     Ok(())
 }
 
-fn launch_for_selected(state: &AppState) -> Option<String> {
+fn launch_for_selected(state: &AppState, dangerous: bool) -> Option<String> {
     let wt = current_worktree(state)?;
 
     // If the sessions pane has focus and an interactive session is selected,
@@ -690,11 +739,11 @@ fn launch_for_selected(state: &AppState) -> Option<String> {
     if state.focus == Pane::Sessions {
         if let Some(idx) = state.selected_session {
             if let Some(Session::Interactive { id, cwd, .. }) = wt.sessions.get(idx) {
-                return Some(actions::launch_command_for(cwd, Some(id)));
+                return Some(actions::launch_command_for(cwd, Some(id), dangerous));
             }
         }
     }
 
-    Some(actions::launch_command_for(&wt.path, None))
+    Some(actions::launch_command_for(&wt.path, None, dangerous))
 }
 

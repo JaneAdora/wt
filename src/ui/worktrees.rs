@@ -5,12 +5,33 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
     let focused = state.focus == Pane::Worktrees;
+
+    // Count visible projects/worktrees for the title.
+    let visible_projects: Vec<&crate::model::Project> = state
+        .projects
+        .iter()
+        .filter(|p| project_has_visible_worktrees(p, state))
+        .collect();
+    let total_wts: usize = visible_projects
+        .iter()
+        .map(|p| p.worktrees.iter().filter(|w| worktree_visible(w, state)).count())
+        .sum();
+    let total_active_sessions: usize = visible_projects
+        .iter()
+        .flat_map(|p| p.worktrees.iter().filter(|w| worktree_visible(w, state)))
+        .map(|w| w.sessions.len())
+        .sum();
+
+    let title = format!(
+        "WORKTREES ({} wt · {} sess)",
+        total_wts, total_active_sessions
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused {
@@ -19,7 +40,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
             Style::default()
         })
         .title(Span::styled(
-            "WORKTREES",
+            title,
             if focused {
                 theme::pane_header_focused()
             } else {
@@ -27,31 +48,61 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
             },
         ));
 
+    // Build items AND track the index of the currently-selected row so
+    // ratatui can auto-scroll to keep it visible.
     let mut items: Vec<ListItem> = Vec::new();
-    for p in &state.projects {
-        if !project_has_visible_worktrees(p, state) {
-            continue;
-        }
+    let mut selected_idx: Option<usize> = None;
+    let mut idx = 0usize;
+
+    for p in &visible_projects {
         let expanded = state.expanded.contains(&p.name);
         let marker = if expanded { "▼" } else { "▸" };
+        // Active-session count for this project's visible worktrees.
+        let active = p
+            .worktrees
+            .iter()
+            .filter(|w| worktree_visible(w, state))
+            .map(|w| w.sessions.len())
+            .sum::<usize>();
+        let count_label = if active > 0 {
+            format!("({} · {} sess)", p.worktrees.len(), active)
+        } else {
+            format!("({})", p.worktrees.len())
+        };
+
+        let path = TreePath::project_header(p);
+        if state.selected.as_ref() == Some(&path) {
+            selected_idx = Some(idx);
+        }
         items.push(ListItem::new(Line::from(vec![
-            row_prefix(state, &TreePath::project_header(p)),
-            Span::raw(format!("{marker} {} ({})", p.name, p.worktrees.len())),
+            row_prefix(state, &path),
+            Span::raw(format!("{marker} {} {}", p.name, count_label)),
         ])));
+        idx += 1;
 
         if expanded {
             for wt in &p.worktrees {
                 if !worktree_visible(wt, state) {
                     continue;
                 }
+                let wt_path = TreePath::worktree_row(p, wt);
+                if state.selected.as_ref() == Some(&wt_path) {
+                    selected_idx = Some(idx);
+                }
                 items.push(ListItem::new(Line::from(worktree_spans(
                     state, p, wt, columns,
                 ))));
+                idx += 1;
             }
         }
     }
 
-    f.render_widget(List::new(items).block(block), area);
+    // Use a stateful list so ratatui scrolls to keep the selected row in
+    // view. We don't apply a highlight style — the ▸ prefix marker is the
+    // visual indicator. select() is purely to drive auto-scroll.
+    let mut list_state = ListState::default();
+    list_state.select(selected_idx);
+    f.render_stateful_widget(List::new(items).block(block), area, &mut list_state);
 }
 
 fn row_prefix(state: &AppState, path: &TreePath) -> Span<'static> {
