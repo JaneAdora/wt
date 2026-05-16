@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeEntry {
@@ -103,6 +104,83 @@ pub fn parse_status_v2(porcelain: &str) -> Result<StatusSummary> {
     Ok(s)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogEntry {
+    pub short_sha: String,
+    pub committed_at: i64,
+    pub subject: String,
+}
+
+pub fn parse_log_porcelain(input: &str) -> Result<Vec<LogEntry>> {
+    let mut out = Vec::new();
+    for line in input.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let short_sha = parts
+            .next()
+            .ok_or_else(|| anyhow!("missing sha"))?
+            .to_string();
+        let ct: i64 = parts
+            .next()
+            .ok_or_else(|| anyhow!("missing committed_at"))?
+            .parse()?;
+        let subject = parts.next().unwrap_or("").to_string();
+        out.push(LogEntry {
+            short_sha,
+            committed_at: ct,
+            subject,
+        });
+    }
+    Ok(out)
+}
+
+pub fn run_worktree_list(repo: &Path) -> Result<Vec<WorktreeEntry>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "git worktree list failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    parse_worktree_list(std::str::from_utf8(&out.stdout)?)
+}
+
+pub fn run_status_v2(repo: &Path) -> Result<StatusSummary> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["status", "--porcelain=v2", "--branch"])
+        .output()?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    parse_status_v2(std::str::from_utf8(&out.stdout)?)
+}
+
+pub fn run_log_recent(repo: &Path, n: u32) -> Result<Vec<LogEntry>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["log", &format!("-{n}"), "--format=%h%x09%ct%x09%s"])
+        .output()?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    parse_log_porcelain(std::str::from_utf8(&out.stdout)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +251,23 @@ branch refs/heads/worktree-spec-dashboard-design
         assert_eq!(s.ahead, 2);
         assert_eq!(s.behind, 1);
         assert!(s.dirty);
+    }
+
+    #[test]
+    fn parse_log_one_line_picks_short_sha_and_subject() {
+        let input = "abc1234\t1747400000\tfix gmail label search\n";
+        let out = parse_log_porcelain(input).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].short_sha, "abc1234");
+        assert_eq!(out[0].subject, "fix gmail label search");
+        assert_eq!(out[0].committed_at, 1747400000);
+    }
+
+    #[test]
+    fn parse_log_multiple_entries() {
+        let input = "a\t100\tfirst\nb\t200\tsecond subject\n";
+        let out = parse_log_porcelain(input).unwrap();
+        assert_eq!(out.len(), 2);
     }
 
     #[test]
