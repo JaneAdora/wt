@@ -300,8 +300,7 @@ fn handle_key(
             return Ok(None);
         }
         InputMode::Help { scroll } => {
-            // Help text is ~50 lines; cap scroll on that.
-            let close = handle_scroll_key(scroll, 50, &key);
+            let close = handle_scroll_key(scroll, crate::ui::modal::help_line_count(), &key);
             if close {
                 ui.mode = InputMode::Normal;
             }
@@ -405,16 +404,17 @@ fn next_pane(p: Pane) -> Pane {
 /// hold a borrow on it.
 #[must_use]
 fn handle_scroll_key(scroll: &mut u16, total: u16, key: &KeyEvent) -> bool {
+    let max = total.saturating_sub(1);
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => return true,
         KeyCode::Down | KeyCode::Char('j') => {
-            *scroll = scroll.saturating_add(1);
+            *scroll = scroll.saturating_add(1).min(max);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             *scroll = scroll.saturating_sub(1);
         }
         KeyCode::PageDown | KeyCode::Char(' ') => {
-            *scroll = scroll.saturating_add(10).min(total.saturating_sub(1));
+            *scroll = scroll.saturating_add(10).min(max);
         }
         KeyCode::PageUp | KeyCode::Char('b') => {
             *scroll = scroll.saturating_sub(10);
@@ -423,7 +423,7 @@ fn handle_scroll_key(scroll: &mut u16, total: u16, key: &KeyEvent) -> bool {
             *scroll = 0;
         }
         KeyCode::Char('G') | KeyCode::End => {
-            *scroll = total.saturating_sub(1);
+            *scroll = max;
         }
         _ => {}
     }
@@ -545,6 +545,35 @@ mod tests {
         let state = fixture_state();
         let cmd = launch_for_selected(&state, true).unwrap();
         assert_eq!(cmd, "cd /p/alpha && claude --dangerously-skip-permissions");
+    }
+
+    #[test]
+    fn scroll_key_clamps_at_total() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut scroll = 0u16;
+        // Press j 100 times against a 10-line total; we should stop at 9.
+        for _ in 0..100 {
+            let _ = handle_scroll_key(
+                &mut scroll,
+                10,
+                &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(scroll, 9);
+    }
+
+    #[test]
+    fn scroll_key_pgdn_clamps_at_total() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut scroll = 0u16;
+        for _ in 0..50 {
+            let _ = handle_scroll_key(
+                &mut scroll,
+                10,
+                &KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(scroll, 9);
     }
 
     #[test]

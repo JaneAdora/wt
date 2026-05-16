@@ -1,4 +1,4 @@
-wt — Worktree Wizard
+wt :: Worktree Wizard
 
 NAVIGATION
   ↑ ↓  or  j k       Move selection in focused pane
@@ -10,7 +10,7 @@ ACTIONS
   c                   Copy launch command to clipboard (OSC 52)
   o                   Print launch command to stdout and exit
   D                   Print + exit with --dangerously-skip-permissions
-                      (the "do it" key — assumes you've reviewed)
+                      (the "do it" key; assumes you've reviewed)
 
 LAUNCH COMMAND SHAPE
   Worktree selected:  cd PATH && claude [--dangerously-skip-permissions]

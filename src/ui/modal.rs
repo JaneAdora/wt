@@ -10,6 +10,15 @@ use ratatui::{
 
 const HELP_BODY: &str = include_str!("help.txt");
 
+/// Number of source lines in the embedded help text. Used by the
+/// scroll-key handler to clamp scroll position to the actual content.
+/// This is an approximation; wrap on narrow widths will add more visual
+/// lines, so users may still scroll a bit past on a phone, but never
+/// infinitely.
+pub fn help_line_count() -> u16 {
+    HELP_BODY.lines().count() as u16
+}
+
 /// Render the commit-log modal as a wrapped, scrollable paragraph.
 ///
 /// Each entry becomes two lines: a header with the short SHA (highlighted
