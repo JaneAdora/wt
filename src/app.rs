@@ -1,6 +1,8 @@
 use crate::actions;
 use crate::discovery;
-use crate::model::{ActiveFilter, AppState, Pane, Project, Session, StatusLine, TreePath, Worktree};
+use crate::model::{
+    ActiveFilter, AppState, Pane, Project, Session, StatusLine, TreePath, Worktree,
+};
 use crate::sessions;
 use crate::ui::layout;
 use anyhow::Result;
@@ -43,12 +45,17 @@ pub enum InputMode {
 
 pub struct UiState {
     pub mode: InputMode,
+    /// Two-step delete confirm for bg jobs. First `x` arms it with the
+    /// job id and the press timestamp; second `x` within 3s on the same
+    /// job fires the delete. Cleared on selection change or timeout.
+    pub pending_delete: Option<(String, Instant)>,
 }
 
 impl UiState {
     pub fn new() -> Self {
         Self {
             mode: InputMode::Normal,
+            pending_delete: None,
         }
     }
 }
@@ -64,6 +71,7 @@ pub fn default_projects_roots() -> Vec<PathBuf> {
 }
 
 pub fn initial_state(projects_roots: Vec<PathBuf>) -> Result<AppState> {
+    let saved = crate::config::load_or_default();
     let mut projects = discovery::scan_many(&projects_roots)?;
     discovery::enrich_with_status(&mut projects);
 
@@ -73,25 +81,53 @@ pub fn initial_state(projects_roots: Vec<PathBuf>) -> Result<AppState> {
         .collect();
     let home = dirs::home_dir().unwrap_or_default();
     let jobs = sessions::scan_jobs(&home.join(".claude/jobs")).unwrap_or_default();
-    let interactive =
-        sessions::scan_interactive(&home.join(".claude/projects"), &known).unwrap_or_default();
+    let interactive = sessions::scan_interactive(
+        &home.join(".claude/projects"),
+        &known,
+        saved.session_window.cutoff_seconds(),
+    )
+    .unwrap_or_default();
     sessions::attach_to_worktrees(&mut projects, jobs);
     sessions::attach_to_worktrees(&mut projects, interactive);
 
-    let selected = first_visible(&projects);
-    let expanded = projects.iter().map(|p| p.name.clone()).collect();
+    let expanded: std::collections::HashSet<String> = if saved.expanded.is_empty() {
+        projects.iter().map(|p| p.name.clone()).collect()
+    } else {
+        saved.expanded.clone().into_iter().collect()
+    };
+    let selected = resolve_saved_selection(&projects, &saved).or_else(|| first_visible(&projects));
+
     Ok(AppState {
         projects,
         selected,
         focus: Pane::Worktrees,
-        filter: ActiveFilter::ActiveOnly,
-        search: None,
+        filter: saved.filter,
+        search: saved.search.clone(),
         last_refresh: Instant::now(),
         status: StatusLine::default(),
         expanded,
         generation: 0,
         selected_session: None,
+        session_window: saved.session_window,
     })
+}
+
+/// Try to map a persisted selection back onto the freshly discovered projects.
+/// Returns None if the saved project/worktree no longer exists.
+fn resolve_saved_selection(
+    projects: &[Project],
+    saved: &crate::config::SavedState,
+) -> Option<TreePath> {
+    let proj_name = saved.selected_project.as_ref()?;
+    let p = projects.iter().find(|p| &p.name == proj_name)?;
+    match &saved.selected_worktree {
+        Some(wt_path) => {
+            let wp = std::path::PathBuf::from(wt_path);
+            let w = p.worktrees.iter().find(|w| w.path == wp)?;
+            Some(TreePath::worktree_row(p, w))
+        }
+        None => Some(TreePath::project_header(p)),
+    }
 }
 
 /// Refresh in place, preserving selection/filter/search/focus/expanded.
@@ -106,8 +142,12 @@ pub fn refresh_in_place(state: &mut AppState, projects_roots: Vec<PathBuf>) -> R
         .collect();
     let home = dirs::home_dir().unwrap_or_default();
     let jobs = sessions::scan_jobs(&home.join(".claude/jobs")).unwrap_or_default();
-    let interactive =
-        sessions::scan_interactive(&home.join(".claude/projects"), &known).unwrap_or_default();
+    let interactive = sessions::scan_interactive(
+        &home.join(".claude/projects"),
+        &known,
+        state.session_window.cutoff_seconds(),
+    )
+    .unwrap_or_default();
     sessions::attach_to_worktrees(&mut projects, jobs);
     sessions::attach_to_worktrees(&mut projects, interactive);
 
@@ -202,7 +242,7 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
 }
 
 const FOOTER_KEYS: &str =
-    "? help · ↑↓/jk · Tab · ↵ · e expand-all · c copy · d launch · o exit · r refresh · / filter · a active · g log · q quit";
+    "? help · ↑↓/jk · Tab · ↵ · e expand-all · c copy · d launch · o exit · r refresh · / filter · a active · t window · g log · x delete-bg · q quit";
 
 /// How many rows the bottom footer needs at this terminal width and mode.
 /// Modal/help modes return 0 (their own title_bottom hosts the hint).
@@ -363,6 +403,16 @@ fn handle_key(
             toggle_expand_all(state);
             Ok(None)
         }
+        (KeyCode::Char('t') | KeyCode::Char('T'), _) => {
+            state.session_window = state.session_window.cycle();
+            state.status.say(format!("window: {}", state.session_window.label()));
+            refresh_in_place(state, default_projects_roots())?;
+            Ok(None)
+        }
+        (KeyCode::Char('x') | KeyCode::Char('X'), _) => {
+            handle_delete_job(state, ui)?;
+            Ok(None)
+        }
         (KeyCode::Char('r'), _) => {
             refresh_in_place(state, default_projects_roots())?;
             state.status.say("refreshed");
@@ -459,6 +509,66 @@ fn handle_scroll_key(scroll: &mut u16, total: u16, key: &KeyEvent) -> bool {
     false
 }
 
+/// Delete the selected background job. Requires:
+/// - sessions pane is focused
+/// - selected session is a Session::BackgroundJob
+/// - job status is Completed or Failed (never deletes Running)
+/// - two presses of `x` within 3 seconds on the same job (confirm)
+fn handle_delete_job(state: &mut AppState, ui: &mut UiState) -> Result<()> {
+    if state.focus != Pane::Sessions {
+        state.status.say("focus sessions pane first (Tab)");
+        return Ok(());
+    }
+    let wt = match current_worktree(state) {
+        Some(w) => w,
+        None => return Ok(()),
+    };
+    let sel_idx = state.selected_session.unwrap_or(0);
+    let sess = match wt.sessions.get(sel_idx) {
+        Some(s) => s.clone(),
+        None => return Ok(()),
+    };
+    let (id, status) = match sess {
+        Session::BackgroundJob { id, status, .. } => (id, status),
+        Session::Interactive { .. } => {
+            state.status.say("delete only works on bg jobs");
+            return Ok(());
+        }
+    };
+    if matches!(status, crate::model::JobStatus::Running) {
+        state.status.say("can't delete a running job");
+        return Ok(());
+    }
+
+    // Two-step confirm.
+    let now = Instant::now();
+    let armed = ui
+        .pending_delete
+        .as_ref()
+        .is_some_and(|(pid, when)| pid == &id && now.duration_since(*when).as_secs() < 3);
+    if !armed {
+        ui.pending_delete = Some((id.clone(), now));
+        state.status.say(format!("press x again within 3s to delete {id}"));
+        return Ok(());
+    }
+
+    // Confirmed. rm -rf the job directory.
+    let job_dir = dirs::home_dir().unwrap_or_default().join(".claude/jobs").join(&id);
+    match std::fs::remove_dir_all(&job_dir) {
+        Ok(_) => {
+            state.status.say(format!("deleted job {id}"));
+            ui.pending_delete = None;
+            // Best-effort refresh so the row disappears immediately.
+            let _ = refresh_in_place(state, default_projects_roots());
+        }
+        Err(e) => {
+            state.status.say(format!("delete failed: {e}"));
+            ui.pending_delete = None;
+        }
+    }
+    Ok(())
+}
+
 /// If any project is collapsed, expand all. Otherwise collapse all.
 /// The "all collapsed" state empties the expanded set; expansion
 /// re-fills it with every project name.
@@ -505,7 +615,7 @@ fn handle_enter(state: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{JobStatus, Project, Session, SessionState, Worktree};
+    use crate::model::{JobStatus, Project, Session, SessionState, SessionWindow, Worktree};
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -555,6 +665,7 @@ mod tests {
             expanded,
             generation: 0,
             selected_session: None,
+            session_window: SessionWindow::Days30,
         }
     }
 

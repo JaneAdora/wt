@@ -23,8 +23,14 @@ VIEWS
   r                   Refresh (preserves selection, filter, search, expansion)
   /                   Filter; type substring, Enter to apply, Esc to cancel
   a                   Toggle active-only filter (default on)
+  t                   Cycle interactive-session window: 30d > all > 7d
   g                   Show commit log for the selected worktree
   ?                   Show this help
+
+DELETE
+  x                   Delete the selected background job (state.json + dir).
+                      Two-press confirm: first press arms, second within
+                      3s deletes. Refuses while job is Running.
 
 EXIT
   q  or  Ctrl-C       Quit
@@ -44,6 +50,10 @@ DISCOVERY SCOPE
     ~/Projects/clients/
   Override with WT_ROOTS env var, colon-separated (like PATH):
     WT_ROOTS=~/projects:~/Projects:~/code wt
+
+PERSISTENT STATE
+  UI preferences (filter, expansion set, search, selection, time window)
+  are saved to ~/.config/wt/state.json on quit and restored on launch.
 
 ABOUT
   Single-host dashboard. Built for one terminal tab, designed for mobile

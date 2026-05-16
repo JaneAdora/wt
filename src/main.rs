@@ -1,5 +1,6 @@
 mod actions;
 mod app;
+mod config;
 mod discovery;
 mod git;
 mod model;
@@ -31,6 +32,10 @@ fn main() -> Result<()> {
     let _tick_handle = tick::spawn(tick_tx, Arc::clone(&gen_counter));
 
     let result = app::run(&mut terminal, &mut state, &mut ui_state, tick_rx, gen_counter);
+
+    // Persist UI state regardless of how we exit. Best-effort; failure
+    // is silent.
+    let _ = config::save(&config::snapshot(&state));
 
     crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
     crossterm::terminal::disable_raw_mode()?;

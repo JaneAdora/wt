@@ -95,11 +95,15 @@ pub fn encode_cwd(p: &Path) -> String {
 pub fn scan_interactive(
     projects_dir: &Path,
     known_worktrees: &[PathBuf],
+    cutoff_seconds: Option<u64>,
 ) -> Result<Vec<Session>> {
     let mut out = Vec::new();
-    let cutoff = SystemTime::now()
-        .checked_sub(Duration::from_secs(60 * 60 * 24 * 30))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let cutoff = match cutoff_seconds {
+        Some(s) => SystemTime::now()
+            .checked_sub(Duration::from_secs(s))
+            .unwrap_or(SystemTime::UNIX_EPOCH),
+        None => SystemTime::UNIX_EPOCH,
+    };
 
     for known in known_worktrees {
         let sub = projects_dir.join(encode_cwd(known));
@@ -304,7 +308,7 @@ mod tests {
             let f = dir.join(format!("session-{i:02}.jsonl"));
             fs::write(&f, "{}\n").unwrap();
         }
-        let out = scan_interactive(tmp.path(), &[known.clone()]).unwrap();
+        let out = scan_interactive(tmp.path(), &[known.clone()], Some(60 * 60 * 24 * 30)).unwrap();
         let mine: Vec<_> = out
             .iter()
             .filter(|s| matches!(s, Session::Interactive { cwd, .. } if cwd == &known))
@@ -321,6 +325,7 @@ mod tests {
         let out = scan_interactive(
             tmp.path(),
             &[PathBuf::from("/home/jane/projects/thelma")],
+            Some(60 * 60 * 24 * 30),
         )
         .unwrap();
         assert!(out.is_empty());

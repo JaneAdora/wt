@@ -63,6 +63,40 @@ pub enum Pane { Worktrees, Sessions }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveFilter { ActiveOnly, All }
 
+/// Time window for which interactive sessions to surface. Affects
+/// sessions::scan_interactive's mtime cutoff. Bg jobs are not bounded
+/// (they age out via Claude's own cleanup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionWindow {
+    Days7,
+    Days30,
+    All,
+}
+
+impl SessionWindow {
+    pub fn cutoff_seconds(self) -> Option<u64> {
+        match self {
+            SessionWindow::Days7 => Some(60 * 60 * 24 * 7),
+            SessionWindow::Days30 => Some(60 * 60 * 24 * 30),
+            SessionWindow::All => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            SessionWindow::Days7 => "7d",
+            SessionWindow::Days30 => "30d",
+            SessionWindow::All => "all",
+        }
+    }
+    pub fn cycle(self) -> Self {
+        match self {
+            SessionWindow::Days7 => SessionWindow::Days30,
+            SessionWindow::Days30 => SessionWindow::All,
+            SessionWindow::All => SessionWindow::Days7,
+        }
+    }
+}
+
 /// Identifies a row in the worktree pane. Survives refresh by content,
 /// not by index. We resolve back to indices each render.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +129,8 @@ pub struct AppState {
     /// 0 whenever the worktree selection changes. None means no session
     /// selected (e.g., current worktree has no sessions).
     pub selected_session: Option<usize>,
+    /// Interactive-session time window; cycled with the `t` key.
+    pub session_window: SessionWindow,
 }
 
 #[derive(Debug, Clone, Default)]
