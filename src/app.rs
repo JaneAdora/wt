@@ -362,48 +362,233 @@ fn render_footer(
     );
 }
 
-/// Bottom pane in Sessions view: a compact key-value detail box for the
-/// currently selected session. Same lines the Enter detail modal would
-/// show, just inlined.
+/// Bottom pane in Sessions view: live preview of the selected session's
+/// recent content. For interactive sessions, shows the last 3 user/
+/// assistant turns. For background jobs, shows intent + tail of the
+/// timeline. Press Enter for the structured detail modal.
 fn render_sessions_view_detail(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     use ratatui::text::{Line, Span};
     use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
     use ratatui::style::{Modifier, Style};
 
+    let title = match (current_selected_is_group_header(state), current_session_in_view(state)) {
+        (Some(gi), _) => {
+            let g = &state.session_groups[gi];
+            format!(
+                "GROUP · {} ({} sess)  ↵ to toggle",
+                g.cwd.display(),
+                g.sessions.len(),
+            )
+        }
+        (None, Some(_)) => "SELECTED SESSION  ↵ for full detail".to_string(),
+        _ => "SELECTED SESSION".to_string(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(
-            "SELECTED SESSION  ↵ for full detail",
-            crate::ui::theme::pane_header(),
-        ));
+        .title(Span::styled(title, crate::ui::theme::pane_header()));
 
-    let sess = current_session_in_view(state);
-    let lines: Vec<Line> = match sess {
-        Some(s) => {
-            let rows = session_to_detail_lines(s);
-            rows.into_iter()
-                .map(|(k, v)| {
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{k}: "),
-                            Style::default()
-                                .add_modifier(Modifier::BOLD)
-                                .fg(crate::ui::theme::PINK),
-                        ),
-                        Span::raw(v),
-                    ])
-                })
-                .collect()
+    let lines: Vec<Line> = match current_session_in_view(state) {
+        Some(s) => session_preview_lines(s),
+        None => {
+            // Group header is selected (or nothing). Surface group-level info.
+            if let Some(gi) = current_selected_is_group_header(state) {
+                group_preview_lines(&state.session_groups[gi])
+            } else {
+                vec![Line::from(Span::styled(
+                    "(no session selected — press v if you don't see any)",
+                    crate::ui::theme::dim_footer(),
+                ))]
+            }
         }
-        None => vec![Line::from(Span::styled(
-            "(no session selected)",
-            crate::ui::theme::dim_footer(),
-        ))],
     };
+    // Add a usage hint at the bottom if there is room. We just append a dim
+    // hint line so it doesn't crowd narrow widths.
+    let mut all_lines = lines;
+    all_lines.push(Line::from(""));
+    all_lines.push(Line::from(Span::styled(
+        "[↵ full detail · c copy launch · o open · d danger-open · / filter]",
+        crate::ui::theme::dim_footer(),
+    )));
+
+    let _ = (Modifier::BOLD, Style::default()); // keep imports tidy
     f.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }),
+        Paragraph::new(all_lines).block(block).wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// Lines for a group-header selection: cwd, worktree presence, count,
+/// and the n most-recent session ids inside the group.
+fn group_preview_lines(g: &crate::model::SessionGroup) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    let marker = if g.has_worktree { "● worktree" } else { "○ no worktree" };
+    let mut out = vec![
+        Line::from(vec![
+            Span::styled(
+                "Directory: ",
+                Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+            ),
+            Span::raw(g.cwd.display().to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Status:    ",
+                Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+            ),
+            Span::raw(format!("{marker} · {} sessions", g.sessions.len())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Recent sessions in this group:",
+            crate::ui::theme::dim_footer(),
+        )),
+    ];
+    for s in g.sessions.iter().take(8) {
+        let (kind, id, when) = match s {
+            Session::Interactive { id, mtime, .. } => (
+                "💬 int",
+                id.clone(),
+                crate::ui::sessions::fmt_when_short(*mtime),
+            ),
+            Session::BackgroundJob { id, mtime, .. } => (
+                "⚙ bg ",
+                id.clone(),
+                crate::ui::sessions::fmt_when_short(*mtime),
+            ),
+        };
+        out.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(kind.to_string()),
+            Span::raw("  "),
+            Span::raw(short_id(&id)),
+            Span::raw("  "),
+            Span::raw(when),
+        ]));
+    }
+    out
+}
+
+fn short_id(id: &str) -> String {
+    let take: String = id.chars().take(8).collect();
+    if id.chars().count() > 8 {
+        format!("{take}…")
+    } else {
+        take
+    }
+}
+
+/// Recent content for a single session, formatted as a Vec<Line>.
+fn session_preview_lines(s: &Session) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    match s {
+        Session::Interactive { id, cwd, mtime, .. } => {
+            let mut out = vec![
+                Line::from(vec![
+                    Span::styled(
+                        "Session: ",
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                    ),
+                    Span::raw(short_id(id)),
+                    Span::raw("  "),
+                    Span::styled(
+                        crate::ui::sessions::fmt_when_detail(*mtime),
+                        crate::ui::theme::dim_footer(),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        "CWD:     ",
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                    ),
+                    Span::raw(cwd.display().to_string()),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Recent messages:",
+                    crate::ui::theme::dim_footer(),
+                )),
+            ];
+            let home = dirs::home_dir().unwrap_or_default();
+            let projects_dir = home.join(".claude/projects");
+            let path = crate::sessions::jsonl_path_for(&projects_dir, cwd, id);
+            let turns = crate::sessions::last_turns_from_jsonl(&path, 3);
+            if turns.is_empty() {
+                out.push(Line::from(Span::styled(
+                    "  (no readable turns in jsonl)",
+                    crate::ui::theme::dim_footer(),
+                )));
+            } else {
+                for (role, content) in turns {
+                    let role_style = if role == "user" {
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(crate::ui::theme::MAGENTA)
+                    } else {
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(crate::ui::theme::LAVENDER)
+                    };
+                    out.push(Line::from(Span::styled(format!("  [{role}]"), role_style)));
+                    // The Paragraph::wrap will handle the long line; we still
+                    // hard-trim massive pastes to keep the pane scannable.
+                    let body = if content.chars().count() > 800 {
+                        let head: String = content.chars().take(800).collect();
+                        format!("  {head}…")
+                    } else {
+                        format!("  {content}")
+                    };
+                    out.push(Line::from(body));
+                }
+            }
+            out
+        }
+        Session::BackgroundJob { id, intent, status, mtime, .. } => {
+            let mut out = vec![
+                Line::from(vec![
+                    Span::styled(
+                        "Job:    ",
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                    ),
+                    Span::raw(short_id(id)),
+                    Span::raw("  "),
+                    Span::styled(
+                        crate::ui::sessions::fmt_when_detail(*mtime),
+                        crate::ui::theme::dim_footer(),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(format!("{status:?}").to_lowercase(), crate::ui::theme::status_icon()),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        "Intent: ",
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                    ),
+                    Span::raw(intent.clone().unwrap_or_else(|| "(none)".into())),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Recent timeline:",
+                    crate::ui::theme::dim_footer(),
+                )),
+            ];
+            let jobs_dir = dirs::home_dir().unwrap_or_default().join(".claude/jobs");
+            let tail = crate::sessions::last_timeline_lines(&jobs_dir, id, 5);
+            if tail.is_empty() {
+                out.push(Line::from(Span::styled(
+                    "  (no timeline.jsonl)",
+                    crate::ui::theme::dim_footer(),
+                )));
+            } else {
+                for line in tail {
+                    let trimmed: String = line.chars().take(400).collect();
+                    out.push(Line::from(format!("  {trimmed}")));
+                }
+            }
+            out
+        }
+    }
 }
 
 fn centered_rect(parent: Rect, percent_x: u16, percent_y: u16) -> Rect {

@@ -12,7 +12,46 @@ use anyhow::Result;
 use std::sync::atomic::AtomicU64;
 use std::sync::{mpsc, Arc};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const CLI_HELP: &str = "\
+wt :: Worktree Wizard
+
+USAGE:
+  wt              Launch the dashboard (interactive TTY required).
+  wt --help       Print this message and exit.
+  wt --version    Print the version and exit.
+
+ENVIRONMENT:
+  WT_ROOTS        Override scan roots, colon-separated (like PATH).
+                  Default: ~/:~/projects:~/Projects:~/Projects/clients
+  TZ              Standard timezone override (e.g., America/Chicago).
+                  Affects how timestamps are displayed.
+
+INSIDE wt:
+  Press ? for the full keymap, or visit docs/ROADMAP.md.
+";
+
 fn main() -> Result<()> {
+    // Handle CLI flags before touching the terminal.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    for arg in &args {
+        match arg.as_str() {
+            "--version" | "-V" => {
+                println!("wt {VERSION}");
+                return Ok(());
+            }
+            "--help" | "-h" => {
+                print!("{CLI_HELP}");
+                return Ok(());
+            }
+            other => {
+                eprintln!("wt: unknown argument: {other}\n\nTry: wt --help");
+                std::process::exit(2);
+            }
+        }
+    }
+
     let roots = app::default_projects_roots();
     let mut state = app::initial_state(roots)?;
     let mut ui_state = app::UiState::new();

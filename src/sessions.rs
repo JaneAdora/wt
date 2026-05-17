@@ -373,6 +373,123 @@ pub fn build_session_groups(
     out
 }
 
+/// A (role, content) message pair extracted from an interactive jsonl.
+/// Roles are typically "user" or "assistant".
+pub type Turn = (String, String);
+
+/// Pull the last `n` user/assistant turns from a session's jsonl, in
+/// chronological order (oldest first). Skips non-conversation events
+/// (permission-mode, attachment, file-history-snapshot, ai-title, etc.).
+pub fn last_turns_from_jsonl(path: &Path, n: usize) -> Vec<Turn> {
+    use std::io::{BufRead, BufReader};
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let reader = BufReader::new(f);
+    let mut all: Vec<Turn> = Vec::new();
+    for line in reader.lines().take(5000) {
+        let Ok(line) = line else { continue };
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if kind != "user" && kind != "assistant" {
+            continue;
+        }
+        let role = v
+            .get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            .unwrap_or(kind)
+            .to_string();
+        let content_str = extract_message_content(&v).unwrap_or_default();
+        if content_str.is_empty() {
+            continue;
+        }
+        all.push((role, content_str));
+    }
+    let len = all.len();
+    if len <= n {
+        all
+    } else {
+        all.split_off(len - n)
+    }
+}
+
+/// Extract a flat string from a Claude message-content value. Content can
+/// be a plain string OR an array of blocks (text / tool_use / tool_result).
+/// We concatenate any text-block text and tool_use display.
+fn extract_message_content(v: &serde_json::Value) -> Option<String> {
+    let msg = v.get("message")?;
+    let content = msg.get("content")?;
+    match content {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(blocks) => {
+            let mut out = String::new();
+            for b in blocks {
+                let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match t {
+                    "text" => {
+                        if let Some(s) = b.get("text").and_then(|s| s.as_str()) {
+                            if !out.is_empty() {
+                                out.push('\n');
+                            }
+                            out.push_str(s);
+                        }
+                    }
+                    "tool_use" => {
+                        let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                        if !out.is_empty() {
+                            out.push('\n');
+                        }
+                        out.push_str(&format!("[tool_use: {name}]"));
+                    }
+                    "tool_result" => {
+                        // Could include result preview; usually noisy. Skip.
+                    }
+                    _ => {}
+                }
+            }
+            (!out.is_empty()).then_some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Read the last `n` non-blank lines of a job's timeline.jsonl as raw
+/// strings (no JSON parse — output may be free-form).
+pub fn last_timeline_lines(jobs_dir: &Path, id: &str, n: usize) -> Vec<String> {
+    use std::io::{BufRead, BufReader};
+    let path = jobs_dir.join(id).join("timeline.jsonl");
+    let f = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let reader = BufReader::new(f);
+    let mut all: Vec<String> = Vec::new();
+    for line in reader.lines().take(2000) {
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        all.push(line);
+    }
+    let len = all.len();
+    if len <= n {
+        all
+    } else {
+        all.split_off(len - n)
+    }
+}
+
+/// Find the jsonl path for an interactive session: takes the session's
+/// cwd and id, computes `~/.claude/projects/<encoded-cwd>/<id>.jsonl`.
+pub fn jsonl_path_for(projects_dir: &Path, cwd: &Path, id: &str) -> PathBuf {
+    projects_dir.join(encode_cwd(cwd)).join(format!("{id}.jsonl"))
+}
+
 /// Attach sessions to the worktree whose `path` matches the session's `cwd`.
 /// Sessions with no matching worktree are dropped.
 pub fn attach_to_worktrees(projects: &mut [Project], sessions: Vec<Session>) {

@@ -8,9 +8,10 @@ THE LAYOUT
     SESSIONS  (bottom)      : Claude sessions attached to the selected worktree
   Sessions view:
     SESSIONS · all (top)    : every Claude session on the machine, grouped
-                              by cwd. ● marks groups whose cwd has a known
-                              worktree; ○ marks orphan dirs (sessions but
-                              no wt-discovered worktree).
+                              by cwd.
+                                ▼/▸ = group expanded / collapsed
+                                ●   = wt found a worktree for this cwd
+                                ○   = orphan dir (sessions but no wt match)
     SELECTED SESSION (bot)  : compact detail of the selected session; press
                               Enter for the full-text modal.
   The focused pane (Tree view) has a bright pink border and magenta title.

@@ -89,10 +89,12 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     }
 
     if items.is_empty() {
-        items.push(ListItem::new(Span::styled(
-            "(no matching sessions)",
-            theme::dim_footer(),
-        )));
+        let hint = if state.search.as_deref().filter(|s| !s.is_empty()).is_some() {
+            "(no matching sessions — Esc to clear filter)"
+        } else {
+            "(no sessions in window — press t to widen, or check ~/.claude is populated)"
+        };
+        items.push(ListItem::new(Span::styled(hint, theme::dim_footer())));
     }
 
     let mut list_state = ListState::default();
