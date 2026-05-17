@@ -4,21 +4,21 @@ A lightweight terminal dashboard for git worktrees and Claude Code sessions acro
 
 ```
 WORKTREES (30 of 48 wt · 29 sess) · filter: active           WT Wizard 🧙
-  ▼ ignis (6 of 7 · 9 sess) ●3
-    └ ignis           main             ●5
-    └ guide-lp        worktree-gu…     ●     ●4
+  ▼ project-alpha (6 of 7 · 9 sess) ●3
+    └ project-alpha   main             ●5
+    └ feature-login   worktree-feat…   ●     ●4
     ...
-  ▼ skai-work (4 · 5 sess) ●3
-    ↳ skai-work       feat/gdocs-…    ●5
+  ▼ my-cli-tool (4 · 5 sess) ●3
+    ↳ my-cli-tool     feat/json-out…   ●5
 
-SESSIONS · skai-work/skai-work
+SESSIONS · my-cli-tool/my-cli-tool
   ▸ 💬 int ebe16487… May 16  active   I have a new project for you
     💬 int 8a3f0a12… 1h      active   Continuing from the morning…
 
 RECENT
-  fff9cb9  3h        Merge worktree-feat-thelma-check…
-  aecdc83  May 14    feat(skai): add thelma check/reply
-  e9a2e96  May 13    fix(otter): collapse whitespace…
+  fff9cb9  3h        Merge worktree-feature-x into main
+  aecdc83  May 14    feat: add JSON output mode
+  e9a2e96  May 13    fix: collapse whitespace in search…
 ```
 
 ## Install
