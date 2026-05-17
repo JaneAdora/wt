@@ -180,8 +180,13 @@ pub fn scan_interactive(
     Ok(out)
 }
 
+/// Pull a session summary out of the jsonl. Returns the *full* text (up
+/// to a generous 4096-char safety cap) so the row renderer can truncate
+/// for display and the detail modal can show everything. Preference:
+/// ai-title first, then first user message content.
 fn first_summary_line(path: &Path) -> Option<String> {
     use std::io::{BufRead, BufReader};
+    const HARD_CAP: usize = 4096;
     let f = std::fs::File::open(path).ok()?;
     let reader = BufReader::new(f);
     let mut fallback: Option<String> = None;
@@ -194,7 +199,7 @@ fn first_summary_line(path: &Path) -> Option<String> {
         let line_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if line_type == "ai-title" {
             if let Some(s) = v.get("title").and_then(|t| t.as_str()) {
-                return Some(truncate_chars(s, 80));
+                return Some(cap_chars(s, HARD_CAP));
             }
         }
         if line_type == "user" && fallback.is_none() {
@@ -204,21 +209,22 @@ fn first_summary_line(path: &Path) -> Option<String> {
                 .and_then(|c| c.as_str())
                 .or_else(|| v.get("content").and_then(|c| c.as_str()));
             if let Some(c) = content {
-                fallback = Some(truncate_chars(c, 80));
+                fallback = Some(cap_chars(c, HARD_CAP));
             }
         }
     }
     fallback.or_else(|| Some("(no summary)".into()))
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        return s.to_string();
+/// Cap-by-chars without ellipsis. Used at scan time so we never store more
+/// than HARD_CAP chars per summary (defends against pasted-in megabytes).
+/// The row renderer applies its own width-aware ellipsis at display time.
+fn cap_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars().take(max).collect()
     }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 /// Attach sessions to the worktree whose `path` matches the session's `cwd`.

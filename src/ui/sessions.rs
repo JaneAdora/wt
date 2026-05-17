@@ -238,16 +238,26 @@ pub fn fmt_bytes_pub(n: u64) -> String {
     fmt_bytes(n)
 }
 
-/// Long-form timestamp for the Detail modal: relative + ISO.
-/// Example: "2h ago · 2026-05-16 14:23 UTC"
+/// Long-form timestamp for the Detail modal.
+/// Under 24h: "2h ago · 2026-05-16 14:23 UTC"
+/// Older:     "2026-05-15 00:31 UTC" (no relative form; "May 15 ago" reads wrong)
 pub fn fmt_when_detail(mtime: SystemTime) -> String {
     let epoch = mtime
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let rel = fmt_when_epoch(epoch);
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let age = (now - epoch).max(0);
     let iso = fmt_iso(epoch);
-    format!("{} ago · {}", rel.trim(), iso)
+    if age < 86400 {
+        let rel = fmt_when_epoch(epoch);
+        format!("{} ago · {}", rel.trim(), iso)
+    } else {
+        iso
+    }
 }
 
 /// Format epoch seconds as "YYYY-MM-DD HH:MM UTC". Self-contained
