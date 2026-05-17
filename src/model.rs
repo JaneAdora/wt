@@ -158,8 +158,13 @@ pub struct AppState {
     /// All Claude sessions discovered on the machine, grouped by cwd.
     /// Populated alongside `projects` during init/refresh.
     pub session_groups: Vec<SessionGroup>,
-    /// Selection in the Sessions view: (group_idx, session_idx_in_group).
-    pub selected_in_view: Option<(usize, usize)>,
+    /// Selection in the Sessions view. (group_idx, None) = group header
+    /// row; (group_idx, Some(i)) = the i-th session in that group.
+    pub selected_in_view: Option<(usize, Option<usize>)>,
+    /// Which groups are expanded in the Sessions view, keyed by cwd
+    /// string. Defaults to all-expanded on first launch (set in
+    /// initial_state).
+    pub expanded_groups: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]

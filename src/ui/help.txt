@@ -17,6 +17,12 @@ THE LAYOUT
 
 VIEW
   v  or  V            Toggle between Tree and Sessions views
+                      In Sessions view, groups are collapsible just like
+                      projects: Enter/Right toggle, Left collapses or jumps
+                      to parent group, e/E expand-all/collapse-all.
+                      / filter matches against group cwd OR session
+                      summary/intent/id. Sessions view shows every session
+                      in the current time window (no per-group cap).
 
 SWITCHING PANES
   1                   Focus the WORKTREES pane

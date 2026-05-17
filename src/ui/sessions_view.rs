@@ -14,12 +14,32 @@ use ratatui::{
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let total_sessions: usize = state.session_groups.iter().map(|g| g.sessions.len()).sum();
     let with_worktree = state.session_groups.iter().filter(|g| g.has_worktree).count();
-    let title = format!(
-        "SESSIONS · all · {} groups · {} sess · {} with worktree",
-        state.session_groups.len(),
-        total_sessions,
-        with_worktree,
-    );
+    let visible_groups: Vec<&SessionGroup> = state
+        .session_groups
+        .iter()
+        .filter(|g| {
+            crate::app::group_matches_search(
+                g,
+                state.search.as_deref().filter(|s| !s.is_empty()),
+            )
+        })
+        .collect();
+    let title = if visible_groups.len() < state.session_groups.len() {
+        format!(
+            "SESSIONS · {} of {} groups · {} sess · {} w/ wt",
+            visible_groups.len(),
+            state.session_groups.len(),
+            total_sessions,
+            with_worktree,
+        )
+    } else {
+        format!(
+            "SESSIONS · all · {} groups · {} sess · {} with worktree",
+            state.session_groups.len(),
+            total_sessions,
+            with_worktree,
+        )
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -34,21 +54,43 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let mut row = 0usize;
 
     for (gi, group) in state.session_groups.iter().enumerate() {
-        items.push(ListItem::new(Line::from(group_header_spans(group))));
+        if !crate::app::group_matches_search(
+            group,
+            state.search.as_deref().filter(|s| !s.is_empty()),
+        ) {
+            continue;
+        }
+        let expanded = state
+            .expanded_groups
+            .contains(&group.cwd.to_string_lossy().to_string());
+        let header_selected = state.selected_in_view == Some((gi, None));
+        if header_selected {
+            selected_idx = Some(row);
+        }
+        items.push(ListItem::new(Line::from(group_header_spans(
+            group,
+            expanded,
+            header_selected,
+        ))));
         row += 1;
-        for (si, sess) in group.sessions.iter().enumerate() {
-            let is_sel = state.selected_in_view == Some((gi, si));
-            if is_sel {
-                selected_idx = Some(row);
+
+        if expanded {
+            for (si, sess) in group.sessions.iter().enumerate() {
+                let is_sel = state.selected_in_view == Some((gi, Some(si)));
+                if is_sel {
+                    selected_idx = Some(row);
+                }
+                items.push(ListItem::new(Line::from(session_spans(
+                    sess, is_sel, area.width,
+                ))));
+                row += 1;
             }
-            items.push(ListItem::new(Line::from(session_spans(sess, is_sel, area.width))));
-            row += 1;
         }
     }
 
     if items.is_empty() {
         items.push(ListItem::new(Span::styled(
-            "(no Claude sessions found in ~/.claude)",
+            "(no matching sessions)",
             theme::dim_footer(),
         )));
     }
@@ -58,17 +100,28 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     f.render_stateful_widget(List::new(items).block(block), area, &mut list_state);
 }
 
-fn group_header_spans<'a>(group: &SessionGroup) -> Vec<Span<'a>> {
+fn group_header_spans<'a>(
+    group: &SessionGroup,
+    expanded: bool,
+    selected: bool,
+) -> Vec<Span<'a>> {
     let cwd_display = group.cwd.to_string_lossy().to_string();
-    let marker = if group.has_worktree { "●" } else { "○" };
-    let marker_style = if group.has_worktree {
+    let collapse_marker = if expanded { "▼" } else { "▸" };
+    let wt_marker = if group.has_worktree { "●" } else { "○" };
+    let wt_style = if group.has_worktree {
         theme::status_icon()
     } else {
         theme::dim_footer()
     };
+    let focus = if selected {
+        Span::styled(FOCUS_MARKER, theme::active_row())
+    } else {
+        Span::raw(UNFOCUSED_PREFIX)
+    };
     vec![
-        Span::raw("  "),
-        Span::styled(marker, marker_style),
+        focus,
+        Span::raw(format!("{collapse_marker} ")),
+        Span::styled(wt_marker, wt_style),
         Span::raw(" "),
         Span::styled(cwd_display, theme::pane_header()),
         Span::raw("  "),

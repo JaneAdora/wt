@@ -291,8 +291,8 @@ pub fn scan_all_interactive(
                 },
             ));
         }
+        // Sessions-view path: show all sessions in window per cwd, no cap.
         sessions_here.sort_by(|a, b| b.0.cmp(&a.0));
-        sessions_here.truncate(5);
         out.extend(sessions_here.into_iter().map(|(_, s)| s));
     }
     Ok(out)

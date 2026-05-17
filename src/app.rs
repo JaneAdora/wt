@@ -120,8 +120,14 @@ pub fn initial_state(projects_roots: Vec<PathBuf>) -> Result<AppState> {
     let selected_in_view = if session_groups.is_empty() {
         None
     } else {
-        Some((0, 0))
+        // Initial selection: first group's header so user sees the structure.
+        Some((0, None))
     };
+    // Default to all groups expanded so the view shows everything at first.
+    let expanded_groups: std::collections::HashSet<String> = session_groups
+        .iter()
+        .map(|g| g.cwd.to_string_lossy().to_string())
+        .collect();
 
     Ok(AppState {
         projects,
@@ -138,6 +144,7 @@ pub fn initial_state(projects_roots: Vec<PathBuf>) -> Result<AppState> {
         view: crate::model::ViewMode::Tree,
         session_groups,
         selected_in_view,
+        expanded_groups,
     })
 }
 
@@ -187,7 +194,11 @@ pub fn refresh_in_place(state: &mut AppState, projects_roots: Vec<PathBuf>) -> R
         state.session_window.cutoff_seconds(),
     );
     if state.selected_in_view.is_none() && !state.session_groups.is_empty() {
-        state.selected_in_view = Some((0, 0));
+        state.selected_in_view = Some((0, None));
+    }
+    // Newly discovered groups default to expanded so the user sees content.
+    for g in &state.session_groups {
+        state.expanded_groups.insert(g.cwd.to_string_lossy().to_string());
     }
     state.projects = projects;
     state.last_refresh = Instant::now();
@@ -576,11 +587,14 @@ fn handle_key(
             Ok(None)
         }
         (KeyCode::Enter, _) => {
-            // Sessions view: Enter always opens detail on the selected session.
-            // Tree view: depends on focused pane (sessions -> detail, worktrees
-            // -> expand/collapse or focus-jump).
+            // Sessions view:
+            //   On a group header: toggle expand/collapse for that group.
+            //   On a session row: open detail modal.
+            // Tree view: focused-pane dependent.
             if state.view == crate::model::ViewMode::Sessions {
-                if let Some((title, lines)) = build_session_detail_in_view(state) {
+                if let Some(gi) = current_selected_is_group_header(state) {
+                    toggle_group_expansion(state, gi);
+                } else if let Some((title, lines)) = build_session_detail_in_view(state) {
                     ui.mode = InputMode::Detail { title, lines, scroll: 0 };
                 }
             } else if state.focus == Pane::Sessions {
@@ -868,6 +882,10 @@ fn handle_bulk_delete(state: &mut AppState, ui: &mut UiState) -> Result<()> {
 /// The "all collapsed" state empties the expanded set; expansion
 /// re-fills it with every project name.
 fn toggle_expand_all(state: &mut AppState) {
+    if state.view == crate::model::ViewMode::Sessions {
+        toggle_expand_all_groups(state);
+        return;
+    }
     let all_expanded = state.projects.iter().all(|p| state.expanded.contains(&p.name));
     if all_expanded {
         state.expanded.clear();
@@ -878,10 +896,47 @@ fn toggle_expand_all(state: &mut AppState) {
     }
 }
 
+fn toggle_expand_all_groups(state: &mut AppState) {
+    let all_expanded = state
+        .session_groups
+        .iter()
+        .all(|g| state.expanded_groups.contains(&g.cwd.to_string_lossy().to_string()));
+    if all_expanded {
+        state.expanded_groups.clear();
+        state.status.say("collapsed all groups");
+    } else {
+        state.expanded_groups = state
+            .session_groups
+            .iter()
+            .map(|g| g.cwd.to_string_lossy().to_string())
+            .collect();
+        state.status.say("expanded all groups");
+    }
+}
+
+fn toggle_group_expansion(state: &mut AppState, group_idx: usize) {
+    let Some(g) = state.session_groups.get(group_idx) else {
+        return;
+    };
+    let key = g.cwd.to_string_lossy().to_string();
+    if state.expanded_groups.contains(&key) {
+        state.expanded_groups.remove(&key);
+    } else {
+        state.expanded_groups.insert(key);
+    }
+}
+
 /// Right arrow / l: expand a collapsed project; on an already-expanded
 /// project, step into its first worktree; on a worktree row, focus the
 /// sessions pane (mirrors Enter).
 fn handle_expand(state: &mut AppState) {
+    if state.view == crate::model::ViewMode::Sessions {
+        if let Some(gi) = current_selected_is_group_header(state) {
+            let key = state.session_groups[gi].cwd.to_string_lossy().to_string();
+            state.expanded_groups.insert(key);
+        }
+        return;
+    }
     if state.focus != Pane::Worktrees {
         return;
     }
@@ -915,6 +970,21 @@ fn handle_expand(state: &mut AppState) {
 /// Left arrow / h: collapse an expanded project; on a worktree row, move
 /// selection up to the parent project header (without collapsing).
 fn handle_collapse(state: &mut AppState) {
+    if state.view == crate::model::ViewMode::Sessions {
+        match state.selected_in_view {
+            Some((gi, None)) => {
+                // Group header: collapse it.
+                let key = state.session_groups[gi].cwd.to_string_lossy().to_string();
+                state.expanded_groups.remove(&key);
+            }
+            Some((gi, Some(_))) => {
+                // Session row: jump up to its group header.
+                state.selected_in_view = Some((gi, None));
+            }
+            None => {}
+        }
+        return;
+    }
     if state.focus != Pane::Worktrees {
         return;
     }
@@ -1019,6 +1089,7 @@ mod tests {
             view: crate::model::ViewMode::Tree,
             session_groups: vec![],
             selected_in_view: None,
+            expanded_groups: std::collections::HashSet::new(),
         }
     }
 
@@ -1270,36 +1341,81 @@ fn move_selection(state: &mut AppState, delta: i32) {
     }
 }
 
-fn move_in_sessions_view(state: &mut AppState, delta: i32) {
-    let total: usize = state.session_groups.iter().map(|g| g.sessions.len()).sum();
-    if total == 0 {
-        return;
-    }
-    // Flatten current selection to absolute index, apply delta, restore.
-    let cur_abs: i32 = match state.selected_in_view {
-        Some((g, s)) => {
-            let mut acc = 0i32;
-            for gi in 0..g {
-                acc += state.session_groups[gi].sessions.len() as i32;
+/// Build a flat ordered list of currently visible rows in sessions view.
+/// Each row is (group_idx, Option<session_idx>) where None = group header
+/// and Some(i) = the i-th session of that group (only when expanded).
+/// Respects the global search filter (state.search).
+pub fn visible_rows_in_view(state: &AppState) -> Vec<(usize, Option<usize>)> {
+    let mut out = Vec::new();
+    let q = search_lowercase(state);
+    for (gi, g) in state.session_groups.iter().enumerate() {
+        if !group_matches_search(g, q.as_deref()) {
+            continue;
+        }
+        out.push((gi, None));
+        if state.expanded_groups.contains(&g.cwd.to_string_lossy().to_string()) {
+            for si in 0..g.sessions.len() {
+                out.push((gi, Some(si)));
             }
-            acc + s as i32
         }
-        None => 0,
-    };
-    let new_abs = (cur_abs + delta).clamp(0, total as i32 - 1) as usize;
-    let mut walked = 0usize;
-    for (gi, grp) in state.session_groups.iter().enumerate() {
-        if new_abs < walked + grp.sessions.len() {
-            state.selected_in_view = Some((gi, new_abs - walked));
-            return;
+    }
+    out
+}
+
+fn search_lowercase(state: &AppState) -> Option<String> {
+    state.search.as_ref().filter(|s| !s.is_empty()).map(|s| s.to_lowercase())
+}
+
+/// True if a group matches the current search: either its cwd contains the
+/// query, or any session in it does (by id, cwd, or summary/intent).
+pub fn group_matches_search(g: &crate::model::SessionGroup, q: Option<&str>) -> bool {
+    let Some(q) = q else { return true; };
+    if g.cwd.to_string_lossy().to_lowercase().contains(q) {
+        return true;
+    }
+    g.sessions.iter().any(|s| session_matches_search(s, q))
+}
+
+fn session_matches_search(s: &Session, q: &str) -> bool {
+    match s {
+        Session::BackgroundJob { id, intent, cwd, .. } => {
+            id.to_lowercase().contains(q)
+                || cwd.to_string_lossy().to_lowercase().contains(q)
+                || intent.as_deref().map(|i| i.to_lowercase().contains(q)).unwrap_or(false)
         }
-        walked += grp.sessions.len();
+        Session::Interactive { id, summary, cwd, .. } => {
+            id.to_lowercase().contains(q)
+                || cwd.to_string_lossy().to_lowercase().contains(q)
+                || summary.to_lowercase().contains(q)
+        }
     }
 }
 
+fn move_in_sessions_view(state: &mut AppState, delta: i32) {
+    let rows = visible_rows_in_view(state);
+    if rows.is_empty() {
+        return;
+    }
+    let cur_idx = state
+        .selected_in_view
+        .and_then(|sel| rows.iter().position(|&r| r == sel))
+        .unwrap_or(0) as i32;
+    let new_idx = (cur_idx + delta).clamp(0, rows.len() as i32 - 1) as usize;
+    state.selected_in_view = Some(rows[new_idx]);
+}
+
 fn current_session_in_view<'a>(state: &'a AppState) -> Option<&'a Session> {
-    let (gi, si) = state.selected_in_view?;
-    state.session_groups.get(gi)?.sessions.get(si)
+    let (gi, si_opt) = state.selected_in_view?;
+    let g = state.session_groups.get(gi)?;
+    g.sessions.get(si_opt?)
+}
+
+/// True iff the user has a group header (not a session) selected.
+fn current_selected_is_group_header(state: &AppState) -> Option<usize> {
+    match state.selected_in_view {
+        Some((gi, None)) => Some(gi),
+        _ => None,
+    }
 }
 
 fn move_worktree_selection(state: &mut AppState, delta: i32) {
