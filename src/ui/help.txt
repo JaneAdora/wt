@@ -21,8 +21,14 @@ NAVIGATION (within the focused pane)
                         Right on worktree row:      focus the SESSIONS pane
                         Left  on expanded project:  collapse
                         Left  on worktree row:      jump up to parent project
-  Enter               Project row: expand/collapse
-                      Worktree row: focus the SESSIONS pane
+  Enter               Worktrees pane:
+                        Project row: expand/collapse
+                        Worktree row: focus the SESSIONS pane
+                      Sessions pane:
+                        Open a detail modal with the full untruncated text
+                        (id, cwd, status, date, summary/intent). Use this
+                        when text is clipped on the right.
+                        For commit subjects, press g instead.
   e  or  E            Expand all / collapse all (toggle). Aliases.
 
 ACTIONS

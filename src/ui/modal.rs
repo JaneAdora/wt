@@ -115,6 +115,50 @@ pub fn render(f: &mut Frame, area: Rect, log: &[LogEntry], title: &str, scroll: 
     f.render_widget(p, area);
 }
 
+/// Render a key/value detail modal. Each line gets the key in bold pink
+/// followed by the value (which wraps). Used by Enter on a sessions row
+/// to show the full untruncated text.
+pub fn render_detail(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    rows: &[(String, String)],
+    scroll: u16,
+) {
+    f.render_widget(Clear, area);
+    let footer_keys = "j/k scroll · g top · G bottom · Esc close";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            format!(" {title} "),
+            theme::pane_header_focused(),
+        ))
+        .title_bottom(Line::from(Span::styled(
+            format!(" {footer_keys} "),
+            theme::dim_footer(),
+        )));
+
+    // Build lines: each row becomes one Line with bold-pink key followed
+    // by the value. Then a blank Line between rows for breathing room.
+    let mut lines: Vec<Line> = Vec::with_capacity(rows.len() * 2);
+    for (k, v) in rows {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{k}: "),
+                Style::default().add_modifier(Modifier::BOLD).fg(theme::PINK),
+            ),
+            Span::raw(v.clone()),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    let p = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    f.render_widget(p, area);
+}
+
 /// Render the help overlay. Reuses the modal envelope (Clear, bordered
 /// block, footer keymap) and word-wraps the help text body.
 pub fn render_help(f: &mut Frame, area: Rect, scroll: u16) {

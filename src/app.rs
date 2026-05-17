@@ -41,6 +41,13 @@ pub enum InputMode {
     Help {
         scroll: u16,
     },
+    /// Detail view of a single item (session). Pre-rendered key/value
+    /// lines so the modal renderer can wrap them.
+    Detail {
+        title: String,
+        lines: Vec<(String, String)>,
+        scroll: u16,
+    },
 }
 
 pub struct UiState {
@@ -244,6 +251,10 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
             let modal_area = centered_rect(area, 94, 90);
             crate::ui::modal::render_help(f, modal_area, *scroll);
         }
+        InputMode::Detail { title, lines, scroll } => {
+            let modal_area = centered_rect(area, 94, 90);
+            crate::ui::modal::render_detail(f, modal_area, title, lines, *scroll);
+        }
         _ => {}
     }
 }
@@ -256,7 +267,7 @@ const FOOTER_KEYS: &str =
 /// Search mode returns 1. Normal mode word-wraps FOOTER_KEYS.
 fn footer_height(width: u16, ui: &UiState) -> u16 {
     match &ui.mode {
-        InputMode::Modal { .. } | InputMode::Help { .. } => 0,
+        InputMode::Modal { .. } | InputMode::Help { .. } | InputMode::Detail { .. } => 0,
         InputMode::Search(_) => 1,
         InputMode::Normal => {
             let chars = FOOTER_KEYS.chars().count() as u16;
@@ -286,7 +297,7 @@ fn render_footer(
             );
             return;
         }
-        InputMode::Modal { .. } | InputMode::Help { .. } => {
+        InputMode::Modal { .. } | InputMode::Help { .. } | InputMode::Detail { .. } => {
             return;
         }
         InputMode::Normal => {}
@@ -369,6 +380,15 @@ fn handle_key(
         }
         InputMode::Help { scroll } => {
             let close = handle_scroll_key(scroll, crate::ui::modal::help_line_count(), &key);
+            if close {
+                ui.mode = InputMode::Normal;
+            }
+            return Ok(None);
+        }
+        InputMode::Detail { lines, scroll, .. } => {
+            // Each row prints 2 visual lines (key/value + blank between).
+            let total = (lines.len() as u16).saturating_mul(2);
+            let close = handle_scroll_key(scroll, total, &key);
             if close {
                 ui.mode = InputMode::Normal;
             }
@@ -468,7 +488,19 @@ fn handle_key(
             Ok(None)
         }
         (KeyCode::Enter, _) => {
-            handle_enter(state);
+            // Sessions pane: expand into a detail modal with the full
+            // untruncated text. Worktrees pane: original toggle/focus.
+            if state.focus == Pane::Sessions {
+                if let Some((title, lines)) = build_session_detail(state) {
+                    ui.mode = InputMode::Detail {
+                        title,
+                        lines,
+                        scroll: 0,
+                    };
+                }
+            } else {
+                handle_enter(state);
+            }
             Ok(None)
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
@@ -1037,6 +1069,39 @@ mod tests {
         assert_eq!(state.focus, Pane::Sessions, "focus preserved");
         assert_ne!(state.generation, original_gen, "generation bumped");
     }
+}
+
+/// Build the (title, key-value lines) payload for the Detail modal from the
+/// currently selected session. Returns None if no session is selected.
+fn build_session_detail(state: &AppState) -> Option<(String, Vec<(String, String)>)> {
+    let wt = current_worktree(state)?;
+    let idx = state.selected_session?;
+    let sess = wt.sessions.get(idx)?;
+
+    let project = state.selected.as_ref().map(|s| s.project.clone()).unwrap_or_default();
+    let wt_name = wt.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+    let title = format!("SESSION · {project}/{wt_name}");
+
+    let lines = match sess {
+        Session::Interactive { id, summary, cwd, mtime, state: sstate, .. } => vec![
+            ("ID".into(), id.clone()),
+            ("Type".into(), "interactive".into()),
+            ("State".into(), format!("{sstate:?}").to_lowercase()),
+            ("When".into(), crate::ui::sessions::fmt_when_detail(*mtime)),
+            ("CWD".into(), cwd.to_string_lossy().to_string()),
+            ("Summary".into(), summary.clone()),
+        ],
+        Session::BackgroundJob { id, status, cwd, mtime, intent, size_bytes, .. } => vec![
+            ("ID".into(), id.clone()),
+            ("Type".into(), "background job".into()),
+            ("Status".into(), format!("{status:?}").to_lowercase()),
+            ("When".into(), crate::ui::sessions::fmt_when_detail(*mtime)),
+            ("CWD".into(), cwd.to_string_lossy().to_string()),
+            ("Size".into(), crate::ui::sessions::fmt_bytes_pub(*size_bytes)),
+            ("Intent".into(), intent.clone().unwrap_or_else(|| "(none)".into())),
+        ],
+    };
+    Some((title, lines))
 }
 
 fn current_worktree<'a>(state: &'a AppState) -> Option<&'a crate::model::Worktree> {
