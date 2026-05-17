@@ -102,11 +102,16 @@ fn session_spans<'a>(s: &Session, is_selected: bool, available_width: u16) -> Ve
             status,
             mtime,
             intent,
+            size_bytes,
             ..
         } => {
+            // Make room for the size column (~5 chars: "12K", "3.4M", "999K").
+            // Subtract from desc width.
+            let size_label = fmt_bytes(*size_bytes);
+            let local_desc_width = desc_width.saturating_sub(size_label.len() + 2);
             let intent_display = intent
                 .as_deref()
-                .map(|s| truncate_chars(s, desc_width))
+                .map(|s| truncate_chars(s, local_desc_width))
                 .unwrap_or_default();
             vec![
                 prefix,
@@ -116,6 +121,8 @@ fn session_spans<'a>(s: &Session, is_selected: bool, available_width: u16) -> Ve
                 Span::raw(fmt_when(*mtime)),
                 Span::raw("  "),
                 Span::styled(job_status_label(*status), theme::status_icon()),
+                Span::raw("  "),
+                Span::styled(size_label, theme::dim_footer()),
                 Span::raw("  "),
                 Span::styled(intent_display, theme::dim_footer()),
             ]
@@ -238,6 +245,25 @@ fn ymd_month_day(epoch_secs: i64) -> String {
     format!("{month} {d:02}")
 }
 
+/// Format bytes as "12B", "3.4K", "999K", "1.2M", "47M", "2.1G".
+fn fmt_bytes(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if n < KB {
+        format!("{n}B")
+    } else if n < MB {
+        let kb = (n as f64) / KB as f64;
+        if kb < 10.0 { format!("{kb:.1}K") } else { format!("{}K", kb as u64) }
+    } else if n < GB {
+        let mb = (n as f64) / MB as f64;
+        if mb < 10.0 { format!("{mb:.1}M") } else { format!("{}M", mb as u64) }
+    } else {
+        let gb = (n as f64) / GB as f64;
+        format!("{gb:.1}G")
+    }
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -279,6 +305,16 @@ mod tests {
         assert_eq!(ymd_month_day(1_778_889_600), "May 16");
         // 2025-04-02 UTC = 1743552000
         assert_eq!(ymd_month_day(1_743_552_000), "Apr 02");
+    }
+
+    #[test]
+    fn fmt_bytes_examples() {
+        assert_eq!(fmt_bytes(0), "0B");
+        assert_eq!(fmt_bytes(512), "512B");
+        assert_eq!(fmt_bytes(1024), "1.0K");
+        assert_eq!(fmt_bytes(15_360), "15K");
+        assert_eq!(fmt_bytes(1_500_000), "1.4M");
+        assert_eq!(fmt_bytes(50_000_000), "47M");
     }
 
     #[test]

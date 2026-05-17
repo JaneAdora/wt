@@ -49,6 +49,11 @@ pub struct UiState {
     /// job id and the press timestamp; second `x` within 3s on the same
     /// job fires the delete. Cleared on selection change or timeout.
     pub pending_delete: Option<(String, Instant)>,
+    /// Two-step confirm for bulk delete (X capital).
+    pub pending_bulk_delete: Option<Instant>,
+    /// Last soft-deleted entries, available for restore with `u`.
+    /// Each entry is (original_path, trash_path). LIFO; cap small.
+    pub trash_history: Vec<(PathBuf, PathBuf)>,
 }
 
 impl UiState {
@@ -56,6 +61,8 @@ impl UiState {
         Self {
             mode: InputMode::Normal,
             pending_delete: None,
+            pending_bulk_delete: None,
+            trash_history: Vec::new(),
         }
     }
 }
@@ -242,7 +249,7 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
 }
 
 const FOOTER_KEYS: &str =
-    "? help · 1/2 pane · ↑↓/jk · ←→/hl tree · ↵ · e expand-all · c copy · o open · d danger-open · r refresh · / filter · a active · t window · g log · x del-bg · q quit";
+    "? help · 1/2 pane · ↑↓/jk · ←→/hl tree · ↵ · e expand-all · c copy · o open · d danger-open · r refresh · / filter · a active · t window · g log · x del-bg · X bulk-del · u undo · q quit";
 
 /// How many rows the bottom footer needs at this terminal width and mode.
 /// Modal/help modes return 0 (their own title_bottom hosts the hint).
@@ -414,8 +421,16 @@ fn handle_key(
             refresh_in_place(state, default_projects_roots())?;
             Ok(None)
         }
-        (KeyCode::Char('x') | KeyCode::Char('X'), _) => {
+        (KeyCode::Char('x'), _) => {
             handle_delete_job(state, ui)?;
+            Ok(None)
+        }
+        (KeyCode::Char('X'), _) => {
+            handle_bulk_delete(state, ui)?;
+            Ok(None)
+        }
+        (KeyCode::Char('u') | KeyCode::Char('U'), _) => {
+            handle_undo_delete(state, ui)?;
             Ok(None)
         }
         (KeyCode::Char('r'), _) => {
@@ -578,13 +593,17 @@ fn handle_delete_job(state: &mut AppState, ui: &mut UiState) -> Result<()> {
         return Ok(());
     }
 
-    // Confirmed. rm -rf the job directory.
+    // Confirmed. Soft-delete: move to trash dir rather than rm -rf.
     let job_dir = dirs::home_dir().unwrap_or_default().join(".claude/jobs").join(&id);
-    match std::fs::remove_dir_all(&job_dir) {
-        Ok(_) => {
-            state.status.say(format!("deleted job {id}"));
+    match soft_delete_to_trash(&job_dir) {
+        Ok(trash_path) => {
+            ui.trash_history.push((job_dir, trash_path));
+            // Keep the trash history small so we don't accumulate forever.
+            if ui.trash_history.len() > 50 {
+                ui.trash_history.remove(0);
+            }
+            state.status.say(format!("deleted {id} (u to undo)"));
             ui.pending_delete = None;
-            // Best-effort refresh so the row disappears immediately.
             let _ = refresh_in_place(state, default_projects_roots());
         }
         Err(e) => {
@@ -592,6 +611,135 @@ fn handle_delete_job(state: &mut AppState, ui: &mut UiState) -> Result<()> {
             ui.pending_delete = None;
         }
     }
+    Ok(())
+}
+
+/// Move a directory into ~/.config/wt/trash/ under a timestamped name so
+/// collisions across runs are impossible. Returns the new path so the
+/// caller can record it for undo.
+fn soft_delete_to_trash(src: &std::path::Path) -> std::io::Result<PathBuf> {
+    let trash_root = dirs::config_dir()
+        .unwrap_or_default()
+        .join("wt")
+        .join("trash");
+    std::fs::create_dir_all(&trash_root)?;
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unnamed".into());
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dest = trash_root.join(format!("{name}.{ts}"));
+    std::fs::rename(src, &dest)?;
+    Ok(dest)
+}
+
+/// Restore the most recent soft-deleted job, if any.
+fn handle_undo_delete(state: &mut AppState, ui: &mut UiState) -> Result<()> {
+    match ui.trash_history.pop() {
+        Some((original, trash)) => {
+            if let Some(parent) = original.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::rename(&trash, &original) {
+                Ok(_) => {
+                    let id = original
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    state.status.say(format!("restored {id}"));
+                    let _ = refresh_in_place(state, default_projects_roots());
+                }
+                Err(e) => {
+                    // Put it back on history so a future undo could retry.
+                    ui.trash_history.push((original, trash));
+                    state.status.say(format!("restore failed: {e}"));
+                }
+            }
+        }
+        None => state.status.say("nothing to undo"),
+    }
+    Ok(())
+}
+
+/// Bulk delete every Completed or Failed bg job attached to the currently
+/// selected worktree. Running jobs are skipped. Two-press confirm.
+fn handle_bulk_delete(state: &mut AppState, ui: &mut UiState) -> Result<()> {
+    let now = Instant::now();
+    let armed = ui
+        .pending_bulk_delete
+        .is_some_and(|when| now.duration_since(when).as_secs() < 3);
+
+    let wt = match current_worktree(state) {
+        Some(w) => w,
+        None => {
+            state.status.say("no worktree selected");
+            return Ok(());
+        }
+    };
+
+    let candidates: Vec<String> = wt
+        .sessions
+        .iter()
+        .filter_map(|s| match s {
+            Session::BackgroundJob { id, status, .. }
+                if matches!(
+                    status,
+                    crate::model::JobStatus::Completed | crate::model::JobStatus::Failed
+                ) =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        state.status.say("no completed/failed bg jobs here");
+        ui.pending_bulk_delete = None;
+        return Ok(());
+    }
+
+    if !armed {
+        ui.pending_bulk_delete = Some(now);
+        state.status.say(format!(
+            "press X again within 3s to delete {} bg jobs",
+            candidates.len()
+        ));
+        return Ok(());
+    }
+
+    // Confirmed. Soft-delete each candidate, accumulate trash history.
+    let mut deleted = 0usize;
+    let mut errors = 0usize;
+    for id in &candidates {
+        let job_dir = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".claude/jobs")
+            .join(id);
+        match soft_delete_to_trash(&job_dir) {
+            Ok(trash_path) => {
+                ui.trash_history.push((job_dir, trash_path));
+                deleted += 1;
+            }
+            Err(_) => errors += 1,
+        }
+    }
+    if ui.trash_history.len() > 50 {
+        let overflow = ui.trash_history.len() - 50;
+        ui.trash_history.drain(0..overflow);
+    }
+    ui.pending_bulk_delete = None;
+    if errors == 0 {
+        state.status.say(format!("deleted {deleted} bg jobs (u to undo)"));
+    } else {
+        state
+            .status
+            .say(format!("deleted {deleted}, failed {errors}"));
+    }
+    let _ = refresh_in_place(state, default_projects_roots());
     Ok(())
 }
 
@@ -715,6 +863,7 @@ mod tests {
             cwd: PathBuf::from("/p/alpha"),
             mtime: now,
             intent: None,
+            size_bytes: 0,
         };
         let wt = Worktree {
             path: PathBuf::from("/p/alpha"),

@@ -41,6 +41,9 @@ pub enum Session {
         /// Original prompt / task description from state.json `intent`.
         /// Surfaces a meaningful description instead of just the opaque id.
         intent: Option<String>,
+        /// Total bytes on disk under ~/.claude/jobs/<id>/ (sum of regular
+        /// files; symlinks not followed). For "what would I free?" display.
+        size_bytes: u64,
     },
     Interactive {
         id: String,

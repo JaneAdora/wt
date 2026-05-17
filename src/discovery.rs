@@ -76,6 +76,7 @@ pub fn default_roots() -> Vec<PathBuf> {
     }
     let home = dirs::home_dir().unwrap_or_default();
     let mut roots = vec![
+        home.clone(), // catches repos at home root (e.g., ~/peon-ping)
         home.join("projects"),
         home.join("Projects"),
         home.join("Projects/clients"),

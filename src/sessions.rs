@@ -31,6 +31,31 @@ impl JobMetadata {
     }
 }
 
+/// Recursively sum regular-file sizes in `dir`. Skips symlinks and errors.
+/// Returns 0 if the dir doesn't exist or can't be read.
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return 0,
+    };
+    for entry in read.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(ft) if ft.is_file() => {
+                if let Ok(m) = entry.metadata() {
+                    total += m.len();
+                }
+            }
+            Ok(ft) if ft.is_dir() => {
+                total += dir_size(&path);
+            }
+            _ => {} // symlinks etc. ignored
+        }
+    }
+    total
+}
+
 fn parse_status(state: Option<&str>, in_flight: Option<bool>) -> JobStatus {
     if in_flight == Some(true) {
         return JobStatus::Running;
@@ -73,12 +98,14 @@ pub fn scan_jobs(jobs_dir: &Path) -> Result<Vec<Session>> {
         let mtime = std::fs::metadata(&meta_path)
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
+        let size_bytes = dir_size(&dir);
         out.push(Session::BackgroundJob {
             id,
             status: parse_status(meta.state.as_deref(), meta.in_flight),
             cwd: meta.effective_cwd(),
             mtime,
             intent: meta.intent,
+            size_bytes,
         });
     }
     Ok(out)

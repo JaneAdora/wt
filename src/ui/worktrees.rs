@@ -62,7 +62,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, columns: Columns) {
         .title(Span::styled(title, title_style))
         // Right-aligned wizard brand. Width-permitting; ratatui clips if
         // it overlaps the left title.
-        .title_top(Line::from(Span::styled("🧙 ww", theme::dim_footer())).right_aligned());
+        .title_top(Line::from(Span::styled("WT Wizard 🧙", theme::dim_footer())).right_aligned());
 
     // Build items AND track the index of the currently-selected row so
     // ratatui can auto-scroll to keep it visible.
@@ -303,6 +303,7 @@ mod tests {
                     cwd: "/x/y".into(),
                     mtime: std::time::SystemTime::now(),
                     intent: None,
+                    size_bytes: 0,
                 })
                 .collect(),
             has_upstream: true,

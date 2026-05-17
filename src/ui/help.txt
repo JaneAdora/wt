@@ -47,10 +47,16 @@ VIEWS
   g                   Show commit log for the selected worktree
   ?                   Show this help
 
-DELETE
-  x  or  X            Delete the selected background job (state.json + dir).
-                      Two-press confirm: first press arms, second within
-                      3 seconds deletes. Refuses while job is Running. Aliases.
+DELETE (soft, moves to ~/.config/wt/trash/)
+  x                   Soft-delete the selected background job. Two-press
+                      confirm: first arms, second within 3s moves the job
+                      directory into the trash. Refuses while Running.
+  X                   Bulk-delete all Completed and Failed bg jobs on the
+                      currently selected worktree. Two-press confirm.
+                      Running jobs are skipped automatically.
+  u  or  U            Undo the most recent soft-delete (single or bulk).
+                      Restores from ~/.config/wt/trash/. LIFO; last
+                      deleted item comes back first.
 
 EXIT
   q  or  Ctrl-C       Quit (saves UI state)
@@ -68,10 +74,15 @@ LEAVING SEARCH (the / mode)
   Enter               Apply; the filter sticks until you press / again
 
 DISCOVERY SCOPE
-  By default, wt scans:
+  By default, wt scans the immediate non-hidden subdirs of:
+    ~/                       (catches repos at home root, e.g., ~/peon-ping)
     ~/projects/
     ~/Projects/
     ~/Projects/clients/
+  Each one is included only if it contains a .git. Linked worktrees
+  are picked up via `git worktree list` per repo, so they show up
+  no matter where they live on disk.
+
   Override with WT_ROOTS env var, colon-separated (like PATH):
     WT_ROOTS=~/projects:~/Projects:~/code wt
 
