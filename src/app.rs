@@ -111,6 +111,18 @@ pub fn initial_state(projects_roots: Vec<PathBuf>) -> Result<AppState> {
     };
     let selected = resolve_saved_selection(&projects, &saved).or_else(|| first_visible(&projects));
 
+    let session_groups = sessions::build_session_groups(
+        &home.join(".claude/jobs"),
+        &home.join(".claude/projects"),
+        &known,
+        saved.session_window.cutoff_seconds(),
+    );
+    let selected_in_view = if session_groups.is_empty() {
+        None
+    } else {
+        Some((0, 0))
+    };
+
     Ok(AppState {
         projects,
         selected,
@@ -123,6 +135,9 @@ pub fn initial_state(projects_roots: Vec<PathBuf>) -> Result<AppState> {
         generation: 0,
         selected_session: None,
         session_window: saved.session_window,
+        view: crate::model::ViewMode::Tree,
+        session_groups,
+        selected_in_view,
     })
 }
 
@@ -165,6 +180,15 @@ pub fn refresh_in_place(state: &mut AppState, projects_roots: Vec<PathBuf>) -> R
     sessions::attach_to_worktrees(&mut projects, jobs);
     sessions::attach_to_worktrees(&mut projects, interactive);
 
+    state.session_groups = sessions::build_session_groups(
+        &home.join(".claude/jobs"),
+        &home.join(".claude/projects"),
+        &known,
+        state.session_window.cutoff_seconds(),
+    );
+    if state.selected_in_view.is_none() && !state.session_groups.is_empty() {
+        state.selected_in_view = Some((0, 0));
+    }
     state.projects = projects;
     state.last_refresh = Instant::now();
     state.generation = state.generation.wrapping_add(1);
@@ -238,8 +262,16 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
         .split(area);
     let cols = layout::choose_columns(area.width);
 
-    crate::ui::worktrees::render(f, chunks[0], state, cols);
-    crate::ui::sessions::render(f, chunks[1], state);
+    match state.view {
+        crate::model::ViewMode::Tree => {
+            crate::ui::worktrees::render(f, chunks[0], state, cols);
+            crate::ui::sessions::render(f, chunks[1], state);
+        }
+        crate::model::ViewMode::Sessions => {
+            crate::ui::sessions_view::render(f, chunks[0], state);
+            render_sessions_view_detail(f, chunks[1], state);
+        }
+    }
     render_footer(f, chunks[2], state, cols, ui);
 
     match &ui.mode {
@@ -260,7 +292,7 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
 }
 
 const FOOTER_KEYS: &str =
-    "? help · 1/2 pane · ↑↓/jk · ←→/hl tree · ↵ · e expand-all · c copy · o open · d danger-open · r refresh · / filter · a active · t window · g log · x del-bg · X bulk-del · u undo · q quit";
+    "? help · v view · 1/2 pane · ↑↓/jk · ←→/hl tree · ↵ · e expand-all · c copy · o open · d danger-open · r refresh · / filter · a active · t window · g log · x del-bg · X bulk-del · u undo · q quit";
 
 /// How many rows the bottom footer needs at this terminal width and mode.
 /// Modal/help modes return 0 (their own title_bottom hosts the hint).
@@ -315,6 +347,50 @@ fn render_footer(
 
     f.render_widget(
         Paragraph::new(Line::from(Span::raw(text))).wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+/// Bottom pane in Sessions view: a compact key-value detail box for the
+/// currently selected session. Same lines the Enter detail modal would
+/// show, just inlined.
+fn render_sessions_view_detail(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+    use ratatui::style::{Modifier, Style};
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            "SELECTED SESSION  ↵ for full detail",
+            crate::ui::theme::pane_header(),
+        ));
+
+    let sess = current_session_in_view(state);
+    let lines: Vec<Line> = match sess {
+        Some(s) => {
+            let rows = session_to_detail_lines(s);
+            rows.into_iter()
+                .map(|(k, v)| {
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{k}: "),
+                            Style::default()
+                                .add_modifier(Modifier::BOLD)
+                                .fg(crate::ui::theme::PINK),
+                        ),
+                        Span::raw(v),
+                    ])
+                })
+                .collect()
+        }
+        None => vec![Line::from(Span::styled(
+            "(no session selected)",
+            crate::ui::theme::dim_footer(),
+        ))],
+    };
+    f.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }),
         area,
     );
 }
@@ -435,6 +511,18 @@ fn handle_key(
             toggle_expand_all(state);
             Ok(None)
         }
+        (KeyCode::Char('v') | KeyCode::Char('V'), _) => {
+            state.view = match state.view {
+                crate::model::ViewMode::Tree => crate::model::ViewMode::Sessions,
+                crate::model::ViewMode::Sessions => crate::model::ViewMode::Tree,
+            };
+            let label = match state.view {
+                crate::model::ViewMode::Tree => "view: tree",
+                crate::model::ViewMode::Sessions => "view: sessions",
+            };
+            state.status.say(label);
+            Ok(None)
+        }
         (KeyCode::Char('t') | KeyCode::Char('T'), _) => {
             state.session_window = state.session_window.cycle();
             state.status.say(format!("window: {}", state.session_window.label()));
@@ -488,15 +576,16 @@ fn handle_key(
             Ok(None)
         }
         (KeyCode::Enter, _) => {
-            // Sessions pane: expand into a detail modal with the full
-            // untruncated text. Worktrees pane: original toggle/focus.
-            if state.focus == Pane::Sessions {
+            // Sessions view: Enter always opens detail on the selected session.
+            // Tree view: depends on focused pane (sessions -> detail, worktrees
+            // -> expand/collapse or focus-jump).
+            if state.view == crate::model::ViewMode::Sessions {
+                if let Some((title, lines)) = build_session_detail_in_view(state) {
+                    ui.mode = InputMode::Detail { title, lines, scroll: 0 };
+                }
+            } else if state.focus == Pane::Sessions {
                 if let Some((title, lines)) = build_session_detail(state) {
-                    ui.mode = InputMode::Detail {
-                        title,
-                        lines,
-                        scroll: 0,
-                    };
+                    ui.mode = InputMode::Detail { title, lines, scroll: 0 };
                 }
             } else {
                 handle_enter(state);
@@ -927,6 +1016,9 @@ mod tests {
             generation: 0,
             selected_session: None,
             session_window: SessionWindow::Days30,
+            view: crate::model::ViewMode::Tree,
+            session_groups: vec![],
+            selected_in_view: None,
         }
     }
 
@@ -1073,16 +1165,16 @@ mod tests {
 
 /// Build the (title, key-value lines) payload for the Detail modal from the
 /// currently selected session. Returns None if no session is selected.
-fn build_session_detail(state: &AppState) -> Option<(String, Vec<(String, String)>)> {
-    let wt = current_worktree(state)?;
-    let idx = state.selected_session?;
-    let sess = wt.sessions.get(idx)?;
+fn build_session_detail_in_view(state: &AppState) -> Option<(String, Vec<(String, String)>)> {
+    let sess = current_session_in_view(state)?;
+    let cwd = crate::sessions::session_cwd(sess).to_path_buf();
+    let title = format!("SESSION · {}", cwd.display());
+    let lines = session_to_detail_lines(sess);
+    Some((title, lines))
+}
 
-    let project = state.selected.as_ref().map(|s| s.project.clone()).unwrap_or_default();
-    let wt_name = wt.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
-    let title = format!("SESSION · {project}/{wt_name}");
-
-    let lines = match sess {
+fn session_to_detail_lines(sess: &Session) -> Vec<(String, String)> {
+    match sess {
         Session::Interactive { id, summary, cwd, mtime, state: sstate, .. } => vec![
             ("ID".into(), id.clone()),
             ("Type".into(), "interactive".into()),
@@ -1100,8 +1192,16 @@ fn build_session_detail(state: &AppState) -> Option<(String, Vec<(String, String
             ("Size".into(), crate::ui::sessions::fmt_bytes_pub(*size_bytes)),
             ("Intent".into(), intent.clone().unwrap_or_else(|| "(none)".into())),
         ],
-    };
-    Some((title, lines))
+    }
+}
+
+fn build_session_detail(state: &AppState) -> Option<(String, Vec<(String, String)>)> {
+    let wt = current_worktree(state)?;
+    let idx = state.selected_session?;
+    let sess = wt.sessions.get(idx)?;
+    let project = state.selected.as_ref().map(|s| s.project.clone()).unwrap_or_default();
+    let wt_name = wt.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+    Some((format!("SESSION · {project}/{wt_name}"), session_to_detail_lines(sess)))
 }
 
 fn current_worktree<'a>(state: &'a AppState) -> Option<&'a crate::model::Worktree> {
@@ -1158,10 +1258,48 @@ fn is_active_or_search_match(w: &Worktree, state: &AppState) -> bool {
 }
 
 fn move_selection(state: &mut AppState, delta: i32) {
+    // Sessions view: navigation is a flat walk through all (group, session)
+    // pairs. Tree view: routes to worktrees/sessions panes as before.
+    if state.view == crate::model::ViewMode::Sessions {
+        move_in_sessions_view(state, delta);
+        return;
+    }
     match state.focus {
         Pane::Worktrees => move_worktree_selection(state, delta),
         Pane::Sessions => move_session_selection(state, delta),
     }
+}
+
+fn move_in_sessions_view(state: &mut AppState, delta: i32) {
+    let total: usize = state.session_groups.iter().map(|g| g.sessions.len()).sum();
+    if total == 0 {
+        return;
+    }
+    // Flatten current selection to absolute index, apply delta, restore.
+    let cur_abs: i32 = match state.selected_in_view {
+        Some((g, s)) => {
+            let mut acc = 0i32;
+            for gi in 0..g {
+                acc += state.session_groups[gi].sessions.len() as i32;
+            }
+            acc + s as i32
+        }
+        None => 0,
+    };
+    let new_abs = (cur_abs + delta).clamp(0, total as i32 - 1) as usize;
+    let mut walked = 0usize;
+    for (gi, grp) in state.session_groups.iter().enumerate() {
+        if new_abs < walked + grp.sessions.len() {
+            state.selected_in_view = Some((gi, new_abs - walked));
+            return;
+        }
+        walked += grp.sessions.len();
+    }
+}
+
+fn current_session_in_view<'a>(state: &'a AppState) -> Option<&'a Session> {
+    let (gi, si) = state.selected_in_view?;
+    state.session_groups.get(gi)?.sessions.get(si)
 }
 
 fn move_worktree_selection(state: &mut AppState, delta: i32) {
@@ -1208,6 +1346,19 @@ fn copy_current(state: &mut AppState, dangerous: bool) -> Result<()> {
 }
 
 fn launch_for_selected(state: &AppState, dangerous: bool) -> Option<String> {
+    // Sessions view: act on the selected session's cwd; --resume if interactive.
+    if state.view == crate::model::ViewMode::Sessions {
+        let sess = current_session_in_view(state)?;
+        return Some(match sess {
+            Session::Interactive { id, cwd, .. } => {
+                actions::launch_command_for(cwd, Some(id), dangerous)
+            }
+            Session::BackgroundJob { cwd, .. } => {
+                actions::launch_command_for(cwd, None, dangerous)
+            }
+        });
+    }
+
     let wt = current_worktree(state)?;
 
     // If the sessions pane has focus and an interactive session is selected,

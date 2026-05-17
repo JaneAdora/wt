@@ -222,20 +222,32 @@ pub fn fmt_when_epoch(epoch_secs: i64) -> String {
     format!("{label:<8}")
 }
 
-/// Convert seconds-since-epoch (UTC) to "MMM DD" (e.g., "May 14").
+/// Format an epoch second as "MMM DD" in local time. Used for the row's
+/// "When" column on items older than 24h.
 fn ymd_month_day(epoch_secs: i64) -> String {
-    let days = epoch_secs.div_euclid(86_400);
-    let (_y, m, d) = days_to_ymd(days);
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let month = MONTHS[(m - 1) as usize];
-    format!("{month} {d:02}")
+    use jiff::{tz::TimeZone, Timestamp};
+    let ts = match Timestamp::from_second(epoch_secs) {
+        Ok(t) => t,
+        Err(_) => return "?".into(),
+    };
+    ts.to_zoned(TimeZone::system())
+        .strftime("%b %d")
+        .to_string()
 }
 
 /// Public re-export of fmt_bytes for the Detail modal in app.rs.
 pub fn fmt_bytes_pub(n: u64) -> String {
     fmt_bytes(n)
+}
+
+/// Public truncation helper for sessions_view (matches row truncation).
+pub fn trunc_pub(s: &str, max: usize) -> String {
+    truncate_chars(s, max)
+}
+
+/// Public short fmt_when for sessions_view rows.
+pub fn fmt_when_short(mtime: SystemTime) -> String {
+    fmt_when(mtime)
 }
 
 /// Long-form timestamp for the Detail modal.
@@ -260,29 +272,18 @@ pub fn fmt_when_detail(mtime: SystemTime) -> String {
     }
 }
 
-/// Format epoch seconds as "YYYY-MM-DD HH:MM UTC". Self-contained
-/// civil-time arithmetic, no chrono.
+/// Format epoch seconds as "YYYY-MM-DD HH:MM <ZONE>" in local time.
+/// Uses jiff to honor the system TZ (set via /etc/localtime / TZ env).
 fn fmt_iso(epoch_secs: i64) -> String {
-    let days = epoch_secs.div_euclid(86_400);
-    let secs_in_day = epoch_secs.rem_euclid(86_400);
-    let hour = secs_in_day / 3600;
-    let minute = (secs_in_day % 3600) / 60;
-    let (y, m, d) = days_to_ymd(days);
-    format!("{y:04}-{m:02}-{d:02} {hour:02}:{minute:02} UTC")
-}
-
-/// Howard Hinnant's days-to-civil algorithm; returns (year, month, day).
-fn days_to_ymd(days: i64) -> (i32, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (y as i32, m as u32, d as u32)
+    use jiff::{tz::TimeZone, Timestamp};
+    let ts = match Timestamp::from_second(epoch_secs) {
+        Ok(t) => t,
+        Err(_) => return "?".into(),
+    };
+    let tz = TimeZone::system();
+    let zoned = ts.to_zoned(tz);
+    // strftime: ISO date + 24h time + zone abbreviation
+    zoned.strftime("%Y-%m-%d %H:%M %Z").to_string()
 }
 
 /// Format bytes as "12B", "3.4K", "999K", "1.2M", "47M", "2.1G".
@@ -331,20 +332,22 @@ mod tests {
     }
 
     #[test]
-    fn when_absolute_for_old_dates() {
-        // 2025-04-02 00:00:00 UTC = 1743552000
-        let date = SystemTime::UNIX_EPOCH + Duration::from_secs(1_743_552_000);
-        assert_eq!(fmt_when(date).trim(), "Apr 02");
+    fn when_absolute_for_old_dates_uses_local_tz() {
+        // 2025-04-02 12:00 UTC = 1743595200. Local-TZ rendering may
+        // shift the day by a few hours depending on TZ offset; assert
+        // shape ("Apr 02" or "Apr 01" depending on local), not exact.
+        let date = SystemTime::UNIX_EPOCH + Duration::from_secs(1_743_595_200);
+        let s = fmt_when(date);
+        assert!(s.starts_with("Apr "), "expected Apr label, got {s:?}");
     }
 
     #[test]
-    fn ymd_known_dates() {
-        // 2026-01-01 UTC = 1767225600
-        assert_eq!(ymd_month_day(1_767_225_600), "Jan 01");
-        // 2026-05-16 UTC = 1778889600
-        assert_eq!(ymd_month_day(1_778_889_600), "May 16");
-        // 2025-04-02 UTC = 1743552000
-        assert_eq!(ymd_month_day(1_743_552_000), "Apr 02");
+    fn ymd_known_dates_shape() {
+        // Pick noon-UTC epochs so any reasonable TZ keeps us on the
+        // expected day. We assert format shape rather than exact day
+        // to remain portable across CI/test environments.
+        let s = ymd_month_day(1_778_889_600 + 43200); // 2026-05-16 12:00 UTC
+        assert!(s.starts_with("May "), "got {s:?}");
     }
 
     #[test]

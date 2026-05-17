@@ -1,10 +1,22 @@
 wt :: Worktree Wizard
 
 THE LAYOUT
-  The screen has two panes stacked vertically:
-    WORKTREES (top)  : your projects and their worktrees
-    SESSIONS  (bot)  : Claude sessions attached to the selected worktree
-  The focused pane has a bright pink border and a magenta title.
+  Two views, toggled with v:
+
+  Tree view (default):
+    WORKTREES (top)         : your projects and their worktrees
+    SESSIONS  (bottom)      : Claude sessions attached to the selected worktree
+  Sessions view:
+    SESSIONS · all (top)    : every Claude session on the machine, grouped
+                              by cwd. ● marks groups whose cwd has a known
+                              worktree; ○ marks orphan dirs (sessions but
+                              no wt-discovered worktree).
+    SELECTED SESSION (bot)  : compact detail of the selected session; press
+                              Enter for the full-text modal.
+  The focused pane (Tree view) has a bright pink border and magenta title.
+
+VIEW
+  v  or  V            Toggle between Tree and Sessions views
 
 SWITCHING PANES
   1                   Focus the WORKTREES pane

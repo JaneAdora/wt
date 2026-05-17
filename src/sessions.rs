@@ -1,4 +1,4 @@
-use crate::model::{JobStatus, Project, Session, SessionState};
+use crate::model::{JobStatus, Project, Session, SessionGroup, SessionState};
 use anyhow::Result;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -225,6 +225,152 @@ fn cap_chars(s: &str, max: usize) -> String {
     } else {
         s.chars().take(max).collect()
     }
+}
+
+/// Scan ALL interactive sessions across `~/.claude/projects/` regardless
+/// of whether their cwd matches a known worktree. Cwd is extracted from
+/// the first jsonl event that carries it (Claude stores `cwd` on most
+/// events). Sessions whose cwd can't be extracted are dropped.
+pub fn scan_all_interactive(
+    projects_dir: &Path,
+    cutoff_seconds: Option<u64>,
+) -> Result<Vec<Session>> {
+    let mut out = Vec::new();
+    let cutoff = match cutoff_seconds {
+        Some(s) => SystemTime::now()
+            .checked_sub(Duration::from_secs(s))
+            .unwrap_or(SystemTime::UNIX_EPOCH),
+        None => SystemTime::UNIX_EPOCH,
+    };
+
+    let read = match std::fs::read_dir(projects_dir) {
+        Ok(r) => r,
+        Err(_) => return Ok(out),
+    };
+
+    for entry in read.filter_map(|e| e.ok()) {
+        let sub = entry.path();
+        if !sub.is_dir() {
+            continue;
+        }
+        let files_read = match std::fs::read_dir(&sub) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let mut sessions_here: Vec<(SystemTime, Session)> = Vec::new();
+        for f in files_read.filter_map(|e| e.ok()) {
+            let fp = f.path();
+            if fp.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let mt = match std::fs::metadata(&fp).and_then(|m| m.modified()) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if mt < cutoff {
+                continue;
+            }
+            let cwd = match first_cwd_in_jsonl(&fp) {
+                Some(c) => c,
+                None => continue, // skip files we can't pin to a cwd
+            };
+            let stem = fp
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let summary = first_summary_line(&fp).unwrap_or_default();
+            sessions_here.push((
+                mt,
+                Session::Interactive {
+                    id: stem,
+                    summary,
+                    cwd,
+                    mtime: mt,
+                    state: SessionState::Active,
+                },
+            ));
+        }
+        sessions_here.sort_by(|a, b| b.0.cmp(&a.0));
+        sessions_here.truncate(5);
+        out.extend(sessions_here.into_iter().map(|(_, s)| s));
+    }
+    Ok(out)
+}
+
+fn first_cwd_in_jsonl(path: &Path) -> Option<PathBuf> {
+    use std::io::{BufRead, BufReader};
+    let f = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(f);
+    for line in reader.lines().take(20) {
+        let line = line.ok()?;
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+            return Some(PathBuf::from(c));
+        }
+    }
+    None
+}
+
+/// Helper: every Session has a cwd (BackgroundJob: effective_cwd field;
+/// Interactive: cwd extracted from jsonl).
+pub fn session_cwd(s: &Session) -> &Path {
+    match s {
+        Session::BackgroundJob { cwd, .. } => cwd,
+        Session::Interactive { cwd, .. } => cwd,
+    }
+}
+
+/// Helper: mtime of a session.
+pub fn session_mtime(s: &Session) -> SystemTime {
+    match s {
+        Session::BackgroundJob { mtime, .. } => *mtime,
+        Session::Interactive { mtime, .. } => *mtime,
+    }
+}
+
+/// Build the Sessions-view groups: every cwd that has Claude sessions
+/// (bg or interactive), sorted by most-recent activity within each
+/// group, and groups sorted by their most-recent session.
+pub fn build_session_groups(
+    jobs_dir: &Path,
+    projects_dir: &Path,
+    known_worktrees: &[PathBuf],
+    cutoff_seconds: Option<u64>,
+) -> Vec<SessionGroup> {
+    use std::collections::HashMap;
+    let known: std::collections::HashSet<PathBuf> = known_worktrees.iter().cloned().collect();
+
+    let jobs = scan_jobs(jobs_dir).unwrap_or_default();
+    let interactive = scan_all_interactive(projects_dir, cutoff_seconds).unwrap_or_default();
+
+    let mut groups: HashMap<PathBuf, SessionGroup> = HashMap::new();
+    for s in jobs.into_iter().chain(interactive) {
+        let cwd = session_cwd(&s).to_path_buf();
+        let entry = groups.entry(cwd.clone()).or_insert_with(|| SessionGroup {
+            cwd: cwd.clone(),
+            has_worktree: known.contains(&cwd),
+            sessions: vec![],
+        });
+        entry.sessions.push(s);
+    }
+
+    let mut out: Vec<SessionGroup> = groups.into_values().collect();
+    for g in &mut out {
+        g.sessions.sort_by_key(|s| std::cmp::Reverse(session_mtime(s)));
+    }
+    out.sort_by_key(|g| {
+        std::cmp::Reverse(
+            g.sessions
+                .first()
+                .map(session_mtime)
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        )
+    });
+    out
 }
 
 /// Attach sessions to the worktree whose `path` matches the session's `cwd`.

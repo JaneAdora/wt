@@ -63,6 +63,25 @@ pub enum SessionState { Active, Compact, Archived }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane { Worktrees, Sessions }
 
+/// Which top-level view we're showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Worktrees pane on top, sessions for selected worktree below.
+    Tree,
+    /// All Claude sessions grouped by cwd on top, detail for selected
+    /// session below. Worktree presence is annotated per group.
+    Sessions,
+}
+
+/// A directory that has Claude sessions, regardless of whether wt
+/// discovered a worktree there. Populated for the Sessions view.
+#[derive(Debug, Clone)]
+pub struct SessionGroup {
+    pub cwd: PathBuf,
+    pub has_worktree: bool,
+    pub sessions: Vec<Session>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveFilter { ActiveOnly, All }
 
@@ -134,6 +153,13 @@ pub struct AppState {
     pub selected_session: Option<usize>,
     /// Interactive-session time window; cycled with the `t` key.
     pub session_window: SessionWindow,
+    /// Tree (default) vs Sessions (flat all-sessions-by-cwd) view.
+    pub view: ViewMode,
+    /// All Claude sessions discovered on the machine, grouped by cwd.
+    /// Populated alongside `projects` during init/refresh.
+    pub session_groups: Vec<SessionGroup>,
+    /// Selection in the Sessions view: (group_idx, session_idx_in_group).
+    pub selected_in_view: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Default)]
