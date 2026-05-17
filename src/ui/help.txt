@@ -23,13 +23,15 @@ NAVIGATION (within the focused pane)
                         Left  on worktree row:      jump up to parent project
   Enter               Project row: expand/collapse
                       Worktree row: focus the SESSIONS pane
-  e  or  E            Expand all / collapse all (toggle)
+  e  or  E            Expand all / collapse all (toggle). Aliases.
 
 ACTIONS
-  c                   Copy launch command to clipboard (OSC 52)
-  o                   Print launch command to stdout and exit
-  d  or  D            Print + exit with --dangerously-skip-permissions
-                      (the "do it" key; assumes you've reviewed)
+  c                   Copy launch command to clipboard (OSC 52); stay open
+  o                   Open: copy to clipboard AND print to terminal, then exit.
+                      Use this when you're ready to actually launch.
+  d  or  D            Same as o, plus appends --dangerously-skip-permissions.
+                      Aliases (lowercase / uppercase are the same key; bound
+                      both so speech-to-text and caps-lock don't trip you up).
 
 LAUNCH COMMAND SHAPE
   Worktree selected:  cd PATH && claude
@@ -41,14 +43,14 @@ VIEWS
   r                   Refresh (preserves selection, filter, search, expansion)
   /                   Filter by substring; type, Enter to apply, Esc to cancel
   a                   Toggle active-only filter (default on)
-  t                   Cycle interactive-session window: 30d > all > 7d
+  t  or  T            Cycle interactive-session window: 30d > all > 7d. Aliases.
   g                   Show commit log for the selected worktree
   ?                   Show this help
 
 DELETE
-  x                   Delete the selected background job (state.json + dir).
+  x  or  X            Delete the selected background job (state.json + dir).
                       Two-press confirm: first press arms, second within
-                      3 seconds deletes. Refuses while job is Running.
+                      3 seconds deletes. Refuses while job is Running. Aliases.
 
 EXIT
   q  or  Ctrl-C       Quit (saves UI state)

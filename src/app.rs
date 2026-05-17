@@ -242,7 +242,7 @@ fn render_frame(f: &mut ratatui::Frame, state: &AppState, ui: &UiState) {
 }
 
 const FOOTER_KEYS: &str =
-    "? help · 1/2 pane · ↑↓/jk · ←→/hl tree · ↵ · e expand-all · c copy · d launch · o exit · r refresh · / filter · a active · t window · g log · x del-bg · q quit";
+    "? help · 1/2 pane · ↑↓/jk · ←→/hl tree · ↵ · e expand-all · c copy · o open · d danger-open · r refresh · / filter · a active · t window · g log · x del-bg · q quit";
 
 /// How many rows the bottom footer needs at this terminal width and mode.
 /// Modal/help modes return 0 (their own title_bottom hosts the hint).
@@ -381,6 +381,10 @@ fn handle_key(
         }
         (KeyCode::Char('o'), _) => {
             if let Some(cmd) = launch_for_selected(state, false) {
+                // Copy first (best-effort; OSC 52 isn't honoured by all
+                // terminals). Then print to stdout and exit so the user
+                // has the command both ways.
+                let _ = actions::copy_to_clipboard(&cmd);
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
             }
             Ok(None)
@@ -389,6 +393,7 @@ fn handle_key(
         // rather forgive that than make the user retype.
         (KeyCode::Char('d') | KeyCode::Char('D'), _) => {
             if let Some(cmd) = launch_for_selected(state, true) {
+                let _ = actions::copy_to_clipboard(&cmd);
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
             }
             Ok(None)

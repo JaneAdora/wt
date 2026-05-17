@@ -19,6 +19,61 @@ pub fn help_line_count() -> u16 {
     HELP_BODY.lines().count() as u16
 }
 
+/// Parse one help.txt line into a styled Line:
+/// - Empty line: blank
+/// - Header (no leading whitespace): bold lavender
+/// - Indented key+description: bold pink key, plain description,
+///   split at first 3+ space gap after the key text
+/// - Anything else (e.g., continuation lines): plain
+fn parse_help_line(raw: &str) -> Line<'static> {
+    if raw.is_empty() {
+        return Line::from("");
+    }
+    if !raw.starts_with(' ') {
+        return Line::from(Span::styled(
+            raw.to_string(),
+            Style::default().add_modifier(Modifier::BOLD).fg(theme::LAVENDER),
+        ));
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    let key_start = match chars.iter().position(|c| !c.is_whitespace()) {
+        Some(i) => i,
+        None => return Line::from(raw.to_string()),
+    };
+
+    // Find the first run of 3+ consecutive spaces *after* the key text
+    // starts. That's the column gap between key and description.
+    let mut key_end: Option<usize> = None;
+    let mut run = 0usize;
+    for i in key_start..chars.len() {
+        if chars[i] == ' ' {
+            run += 1;
+            if run >= 3 {
+                key_end = Some(i - run + 1);
+                break;
+            }
+        } else {
+            run = 0;
+        }
+    }
+
+    if let Some(end) = key_end {
+        let indent: String = chars[..key_start].iter().collect();
+        let key: String = chars[key_start..end].iter().collect();
+        let rest: String = chars[end..].iter().collect();
+        Line::from(vec![
+            Span::raw(indent),
+            Span::styled(
+                key,
+                Style::default().add_modifier(Modifier::BOLD).fg(theme::PINK),
+            ),
+            Span::raw(rest),
+        ])
+    } else {
+        Line::from(raw.to_string())
+    }
+}
+
 /// Render the commit-log modal as a wrapped, scrollable paragraph.
 ///
 /// Each entry becomes two lines: a header with the short SHA (highlighted
@@ -76,22 +131,7 @@ pub fn render_help(f: &mut Frame, area: Rect, scroll: u16) {
             theme::dim_footer(),
         )));
 
-    // Highlight section headers (lines that match "^[A-Z][A-Z ]+$") for
-    // visual structure. Everything else is plain text.
-    let mut lines: Vec<Line> = Vec::new();
-    for raw in HELP_BODY.lines() {
-        let is_section = !raw.is_empty()
-            && raw.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
-            && raw.chars().all(|c| c.is_ascii_uppercase() || c == ' ' || c == '-');
-        if is_section {
-            lines.push(Line::from(Span::styled(
-                raw.to_string(),
-                Style::default().add_modifier(Modifier::BOLD).fg(theme::LAVENDER),
-            )));
-        } else {
-            lines.push(Line::from(raw.to_string()));
-        }
-    }
+    let lines: Vec<Line> = HELP_BODY.lines().map(parse_help_line).collect();
 
     let p = Paragraph::new(lines)
         .block(block)
