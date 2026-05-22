@@ -32,7 +32,7 @@ fn parse_help_line(raw: &str) -> Line<'static> {
     if !raw.starts_with(' ') {
         return Line::from(Span::styled(
             raw.to_string(),
-            Style::default().add_modifier(Modifier::BOLD).fg(theme::LAVENDER),
+            Style::default().add_modifier(Modifier::BOLD).fg(theme::lavender()),
         ));
     }
     let chars: Vec<char> = raw.chars().collect();
@@ -65,7 +65,7 @@ fn parse_help_line(raw: &str) -> Line<'static> {
             Span::raw(indent),
             Span::styled(
                 key,
-                Style::default().add_modifier(Modifier::BOLD).fg(theme::PINK),
+                Style::default().add_modifier(Modifier::BOLD).fg(theme::pink()),
             ),
             Span::raw(rest),
         ])
@@ -145,7 +145,7 @@ pub fn render_detail(
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{k}: "),
-                Style::default().add_modifier(Modifier::BOLD).fg(theme::PINK),
+                Style::default().add_modifier(Modifier::BOLD).fg(theme::pink()),
             ),
             Span::raw(v.clone()),
         ]));

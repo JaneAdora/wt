@@ -427,14 +427,14 @@ fn group_preview_lines(g: &crate::model::SessionGroup) -> Vec<ratatui::text::Lin
         Line::from(vec![
             Span::styled(
                 "Directory: ",
-                Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::pink()),
             ),
             Span::raw(g.cwd.display().to_string()),
         ]),
         Line::from(vec![
             Span::styled(
                 "Status:    ",
-                Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::pink()),
             ),
             Span::raw(format!("{marker} · {} sessions", g.sessions.len())),
         ]),
@@ -488,7 +488,7 @@ fn session_preview_lines(s: &Session) -> Vec<ratatui::text::Line<'static>> {
                 Line::from(vec![
                     Span::styled(
                         "Session: ",
-                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::pink()),
                     ),
                     Span::raw(short_id(id)),
                     Span::raw("  "),
@@ -500,7 +500,7 @@ fn session_preview_lines(s: &Session) -> Vec<ratatui::text::Line<'static>> {
                 Line::from(vec![
                     Span::styled(
                         "CWD:     ",
-                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::pink()),
                     ),
                     Span::raw(cwd.display().to_string()),
                 ]),
@@ -524,11 +524,11 @@ fn session_preview_lines(s: &Session) -> Vec<ratatui::text::Line<'static>> {
                     let role_style = if role == "user" {
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(crate::ui::theme::MAGENTA)
+                            .fg(crate::ui::theme::magenta())
                     } else {
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(crate::ui::theme::LAVENDER)
+                            .fg(crate::ui::theme::lavender())
                     };
                     out.push(Line::from(Span::styled(format!("  [{role}]"), role_style)));
                     // The Paragraph::wrap will handle the long line; we still
@@ -549,7 +549,7 @@ fn session_preview_lines(s: &Session) -> Vec<ratatui::text::Line<'static>> {
                 Line::from(vec![
                     Span::styled(
                         "Job:    ",
-                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::pink()),
                     ),
                     Span::raw(short_id(id)),
                     Span::raw("  "),
@@ -563,7 +563,7 @@ fn session_preview_lines(s: &Session) -> Vec<ratatui::text::Line<'static>> {
                 Line::from(vec![
                     Span::styled(
                         "Intent: ",
-                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::PINK),
+                        Style::default().add_modifier(Modifier::BOLD).fg(crate::ui::theme::pink()),
                     ),
                     Span::raw(intent.clone().unwrap_or_else(|| "(none)".into())),
                 ]),
