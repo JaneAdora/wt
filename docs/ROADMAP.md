@@ -1,3 +1,9 @@
+---
+type: roadmap
+title: wt-roadmap
+status: active
+---
+
 # wt — Worktree Wizard Roadmap
 
 ```
