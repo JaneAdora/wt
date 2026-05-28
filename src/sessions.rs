@@ -526,7 +526,7 @@ mod tests {
         write_job(
             tmp.path(),
             "abc1",
-            r#"{"cwd":"/home/jane","worktreePath":"/home/jane/projects/thelma","state":"working","inFlight":true}"#,
+            r#"{"cwd":"/home/jane","worktreePath":"/home/jane/projects/example-project","state":"working","inFlight":true}"#,
         );
         write_job(
             tmp.path(),
@@ -542,7 +542,7 @@ mod tests {
             .collect();
         assert_eq!(working.len(), 1);
         if let Session::BackgroundJob { cwd, .. } = working[0] {
-            assert_eq!(cwd, &PathBuf::from("/home/jane/projects/thelma"));
+            assert_eq!(cwd, &PathBuf::from("/home/jane/projects/example-project"));
         }
     }
 
@@ -575,16 +575,16 @@ mod tests {
 
     #[test]
     fn encode_cwd_replaces_slashes() {
-        let cwd = Path::new("/home/jane/projects/thelma");
-        assert_eq!(encode_cwd(cwd), "-home-jane-projects-thelma");
+        let cwd = Path::new("/home/jane/projects/example-project");
+        assert_eq!(encode_cwd(cwd), "-home-jane-projects-example-project");
     }
 
     #[test]
     fn encode_cwd_replaces_dots() {
-        let cwd = Path::new("/home/jane/projects/thelma/.claude/worktrees/spec-dashboard-design");
+        let cwd = Path::new("/home/jane/projects/example-project/.claude/worktrees/spec-dashboard-design");
         assert_eq!(
             encode_cwd(cwd),
-            "-home-jane-projects-thelma--claude-worktrees-spec-dashboard-design"
+            "-home-jane-projects-example-project--claude-worktrees-spec-dashboard-design"
         );
     }
 
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn scan_interactive_caps_at_five_per_known_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let known = PathBuf::from("/home/jane/projects/thelma");
+        let known = PathBuf::from("/home/jane/projects/example-project");
         let dir = tmp.path().join(encode_cwd(&known));
         fs::create_dir_all(&dir).unwrap();
         for i in 0..10 {
@@ -620,7 +620,7 @@ mod tests {
         fs::write(dir.join("a.jsonl"), "{}\n").unwrap();
         let out = scan_interactive(
             tmp.path(),
-            &[PathBuf::from("/home/jane/projects/thelma")],
+            &[PathBuf::from("/home/jane/projects/example-project")],
             Some(60 * 60 * 24 * 30),
         )
         .unwrap();

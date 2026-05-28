@@ -42,12 +42,12 @@ Vertical stack. Single surface. Top pane = worktrees, bottom pane = sessions for
 ┌─ wt ─────────────────────────┐
 │ WORKTREES                    │
 │  ▸ gd2md2html    main   ●    │
-│  ▼ thelma        main   ●3   │
+│  ▼ example-project        main   ●3   │
 │    └ wt-tui      wt-tui ●    │
 │  ▸ zele          main        │
 │  ▸ voxtral       main   ↑2   │
 ├──────────────────────────────┤
-│ SESSIONS · thelma/main       │
+│ SESSIONS · example-project/main       │
 │  ⚙ bg  fe9c…  2m  running    │
 │  💬 int 8a3f…  1h  compact    │
 │  💬 int 2c11…  3d  archived   │

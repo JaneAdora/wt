@@ -51,18 +51,18 @@ mod tests {
 
     #[test]
     fn launch_command_no_resume() {
-        let s = launch_command_for(Path::new("/home/jane/projects/thelma"), None, false);
-        assert_eq!(s, "cd /home/jane/projects/thelma && claude");
+        let s = launch_command_for(Path::new("/home/jane/projects/example-project"), None, false);
+        assert_eq!(s, "cd /home/jane/projects/example-project && claude");
     }
 
     #[test]
     fn launch_command_with_resume() {
         let s = launch_command_for(
-            Path::new("/home/jane/projects/thelma"),
+            Path::new("/home/jane/projects/example-project"),
             Some("abc-123"),
             false,
         );
-        assert_eq!(s, "cd /home/jane/projects/thelma && claude --resume abc-123");
+        assert_eq!(s, "cd /home/jane/projects/example-project && claude --resume abc-123");
     }
 
     #[test]

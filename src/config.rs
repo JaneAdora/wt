@@ -129,7 +129,7 @@ mod tests {
         let s = SavedState {
             filter: ActiveFilter::All,
             expanded: vec!["alpha".into(), "beta".into()],
-            search: Some("thelma".into()),
+            search: Some("example-project".into()),
             selected_project: Some("alpha".into()),
             selected_worktree: Some("/home/jane/projects/alpha".into()),
             session_window: SessionWindow::Days7,
@@ -138,7 +138,7 @@ mod tests {
         let parsed: SavedState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.filter, ActiveFilter::All);
         assert_eq!(parsed.expanded, vec!["alpha", "beta"]);
-        assert_eq!(parsed.search.as_deref(), Some("thelma"));
+        assert_eq!(parsed.search.as_deref(), Some("example-project"));
         assert_eq!(parsed.selected_project.as_deref(), Some("alpha"));
         assert_eq!(parsed.session_window, SessionWindow::Days7);
     }

@@ -187,10 +187,10 @@ mod tests {
 
     #[test]
     fn parse_worktree_list_one_entry() {
-        let input = "worktree /home/jane/projects/thelma\nHEAD abc123def456789\nbranch refs/heads/main\n\n";
+        let input = "worktree /home/jane/projects/example-project\nHEAD abc123def456789\nbranch refs/heads/main\n\n";
         let out = parse_worktree_list(input).unwrap();
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].path, PathBuf::from("/home/jane/projects/thelma"));
+        assert_eq!(out[0].path, PathBuf::from("/home/jane/projects/example-project"));
         assert_eq!(out[0].branch.as_deref(), Some("main"));
         assert_eq!(out[0].head_sha, "abc123def456789");
         assert!(!out[0].bare && !out[0].detached);
