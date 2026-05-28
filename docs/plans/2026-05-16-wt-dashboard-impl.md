@@ -71,9 +71,9 @@ Expected output: at least one JSON file per job with fields covering `cwd` or `w
 ```bash
 ls ~/.claude/projects/ | head -10
 # pick one that looks like a known project
-ls -la ~/.claude/projects/-home-jane-projects-thelma/ 2>/dev/null | head -10
+ls -la ~/.claude/projects/-home-jane-projects-example-project/ 2>/dev/null | head -10
 # inspect first/last line of a jsonl
-F=$(ls ~/.claude/projects/-home-jane-projects-thelma/*.jsonl 2>/dev/null | head -1)
+F=$(ls ~/.claude/projects/-home-jane-projects-example-project/*.jsonl 2>/dev/null | head -1)
 head -1 "$F" | jq .
 tail -1 "$F" | jq .
 ```
@@ -83,8 +83,8 @@ Expected: jsonl entries with `sessionId`, `timestamp`, role/type fields. Record 
 - [ ] **Step 3: Inspect worktrees in the wild**
 
 ```bash
-git -C ~/projects/thelma worktree list --porcelain
-git -C ~/projects/thelma status --porcelain=v2 --branch
+git -C ~/projects/example-project worktree list --porcelain
+git -C ~/projects/example-project status --porcelain=v2 --branch
 ```
 
 Expected: confirm the porcelain v2 output format matches the parser tests we'll write in Tasks 4-5.
@@ -105,7 +105,7 @@ Expected: confirm the porcelain v2 output format matches the parser tests we'll 
 
 ## Interactive session layout (~/.claude/projects/)
 - Encoded cwd: confirmed / NOT confirmed `/` → `-` mapping
-  - Example: `/home/jane/projects/thelma` → `-home-jane-projects-thelma`
+  - Example: `/home/jane/projects/example-project` → `-home-jane-projects-example-project`
 - Per-session file: `<session-uuid>.jsonl`
 - First-line fields: <list>
 - Last-line fields: <list>
@@ -432,10 +432,10 @@ mod tests {
 
     #[test]
     fn parse_worktree_list_one_entry() {
-        let input = "worktree /home/jane/projects/thelma\nHEAD abc123def456789\nbranch refs/heads/main\n\n";
+        let input = "worktree /home/jane/projects/example-project\nHEAD abc123def456789\nbranch refs/heads/main\n\n";
         let out = parse_worktree_list(input).unwrap();
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].path, PathBuf::from("/home/jane/projects/thelma"));
+        assert_eq!(out[0].path, PathBuf::from("/home/jane/projects/example-project"));
         assert_eq!(out[0].branch.as_deref(), Some("main"));
         assert_eq!(out[0].head_sha, "abc123def456789");
         assert!(!out[0].bare && !out[0].detached);
@@ -1051,7 +1051,7 @@ mod tests {
     fn scan_jobs_reads_state_with_worktree_path() {
         let tmp = tempfile::tempdir().unwrap();
         write_job(tmp.path(), "abc1",
-            r#"{"cwd":"/home/jane","worktreePath":"/home/jane/projects/thelma","state":"working","inFlight":true}"#);
+            r#"{"cwd":"/home/jane","worktreePath":"/home/jane/projects/example-project","state":"working","inFlight":true}"#);
         write_job(tmp.path(), "abc2",
             r#"{"cwd":"/home/jane/projects/zele","worktreePath":null,"state":"done","inFlight":false}"#);
 
@@ -1062,7 +1062,7 @@ mod tests {
         assert_eq!(working.len(), 1);
         // The running job's effective cwd is its worktreePath, not its cwd.
         if let Session::BackgroundJob { cwd, .. } = &working[0] {
-            assert_eq!(cwd, &PathBuf::from("/home/jane/projects/thelma"));
+            assert_eq!(cwd, &PathBuf::from("/home/jane/projects/example-project"));
         }
     }
 
@@ -1174,18 +1174,18 @@ Append to the `tests` module:
 ```rust
     #[test]
     fn encode_cwd_replaces_slashes() {
-        let cwd = Path::new("/home/jane/projects/thelma");
-        assert_eq!(encode_cwd(cwd), "-home-jane-projects-thelma");
+        let cwd = Path::new("/home/jane/projects/example-project");
+        assert_eq!(encode_cwd(cwd), "-home-jane-projects-example-project");
     }
 
     #[test]
     fn encode_cwd_replaces_dots() {
         // Verified against real ~/.claude/projects/ on Muthur: both `/` and `.`
         // collapse to `-`, producing `--` where `/.` appears in the source.
-        let cwd = Path::new("/home/jane/projects/thelma/.claude/worktrees/spec-dashboard-design");
+        let cwd = Path::new("/home/jane/projects/example-project/.claude/worktrees/spec-dashboard-design");
         assert_eq!(
             encode_cwd(cwd),
-            "-home-jane-projects-thelma--claude-worktrees-spec-dashboard-design"
+            "-home-jane-projects-example-project--claude-worktrees-spec-dashboard-design"
         );
     }
 
@@ -1200,7 +1200,7 @@ Append to the `tests` module:
     #[test]
     fn scan_interactive_caps_at_five_per_known_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let known = PathBuf::from("/home/jane/projects/thelma");
+        let known = PathBuf::from("/home/jane/projects/example-project");
         let dir = tmp.path().join(encode_cwd(&known));
         fs::create_dir_all(&dir).unwrap();
         for i in 0..10 {
@@ -1219,7 +1219,7 @@ Append to the `tests` module:
         let dir = tmp.path().join("-some-unknown-project");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("a.jsonl"), "{}\n").unwrap();
-        let out = scan_interactive(tmp.path(), &[PathBuf::from("/home/jane/projects/thelma")]).unwrap();
+        let out = scan_interactive(tmp.path(), &[PathBuf::from("/home/jane/projects/example-project")]).unwrap();
         assert!(out.is_empty());
     }
 ```
@@ -1430,14 +1430,14 @@ mod tests {
 
     #[test]
     fn launch_command_no_resume() {
-        let s = launch_command_for(Path::new("/home/jane/projects/thelma"), None);
-        assert_eq!(s, "cd /home/jane/projects/thelma && claude");
+        let s = launch_command_for(Path::new("/home/jane/projects/example-project"), None);
+        assert_eq!(s, "cd /home/jane/projects/example-project && claude");
     }
 
     #[test]
     fn launch_command_with_resume() {
-        let s = launch_command_for(Path::new("/home/jane/projects/thelma"), Some("abc-123"));
-        assert_eq!(s, "cd /home/jane/projects/thelma && claude --resume abc-123");
+        let s = launch_command_for(Path::new("/home/jane/projects/example-project"), Some("abc-123"));
+        assert_eq!(s, "cd /home/jane/projects/example-project && claude --resume abc-123");
     }
 }
 ```
@@ -2659,7 +2659,7 @@ fn main() -> Result<()> {
 cargo run
 ```
 
-Expected: TUI opens. Press `/`, type `thelma`, Enter; only matching rows show. Esc clears. Press `g`; modal pops with last 20 commits. Press `Esc` to dismiss.
+Expected: TUI opens. Press `/`, type `example-project`, Enter; only matching rows show. Esc clears. Press `g`; modal pops with last 20 commits. Press `Esc` to dismiss.
 
 - [ ] **Step 6: Commit**
 

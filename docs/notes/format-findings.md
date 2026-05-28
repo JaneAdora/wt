@@ -48,8 +48,8 @@ The encoding replaces both `/` and `.` with `-`. Examples:
 | Source path | Encoded directory name |
 |---|---|
 | `/home/jane` | `-home-jane` |
-| `/home/jane/projects/thelma` | `-home-jane-projects-thelma` |
-| `/home/jane/projects/thelma/.claude/worktrees/thelma-design` | `-home-jane-projects-thelma--claude-worktrees-thelma-design` |
+| `/home/jane/projects/example-project` | `-home-jane-projects-example-project` |
+| `/home/jane/projects/example-project/.claude/worktrees/example-project-design` | `-home-jane-projects-example-project--claude-worktrees-example-project-design` |
 
 Note the **double dash** (`--`) where `/.` appears in the source: the `/` becomes `-` and the `.` also becomes `-`, producing `--`.
 
