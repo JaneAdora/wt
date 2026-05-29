@@ -58,6 +58,9 @@ pub enum Session {
 pub enum JobStatus { Running, Completed, Failed, Unknown }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Compact/Archived are reserved for future session-state detection; live
+// status is currently carried by JobStatus, so only Active is constructed.
+#[allow(dead_code)]
 pub enum SessionState { Active, Compact, Archived }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
