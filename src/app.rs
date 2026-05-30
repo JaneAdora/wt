@@ -193,9 +193,16 @@ pub fn refresh_in_place(state: &mut AppState, projects_roots: Vec<PathBuf>) -> R
         &known,
         state.session_window.cutoff_seconds(),
     );
-    if state.selected_in_view.is_none() && !state.session_groups.is_empty() {
-        state.selected_in_view = Some((0, None));
-    }
+    // Reconcile the carried-over selection against the rebuilt groups: a refresh
+    // or a narrower session window can shrink the group list, leaving a stale
+    // out-of-range index that would panic the very next render. Reset it.
+    state.selected_in_view = match state.selected_in_view {
+        _ if state.session_groups.is_empty() => None,
+        Some((gi, _)) if gi >= state.session_groups.len() => Some((0, None)),
+        Some((gi, Some(si))) if si >= state.session_groups[gi].sessions.len() => Some((gi, None)),
+        Some(sel) => Some(sel),
+        None => Some((0, None)),
+    };
     // Newly discovered groups default to expanded so the user sees content.
     for g in &state.session_groups {
         state.expanded_groups.insert(g.cwd.to_string_lossy().to_string());
@@ -1158,9 +1165,11 @@ fn handle_collapse(state: &mut AppState) {
     if state.view == crate::model::ViewMode::Sessions {
         match state.selected_in_view {
             Some((gi, None)) => {
-                // Group header: collapse it.
-                let key = state.session_groups[gi].cwd.to_string_lossy().to_string();
-                state.expanded_groups.remove(&key);
+                // Group header: collapse it (guard a possibly-stale index).
+                if let Some(g) = state.session_groups.get(gi) {
+                    let key = g.cwd.to_string_lossy().to_string();
+                    state.expanded_groups.remove(&key);
+                }
             }
             Some((gi, Some(_))) => {
                 // Session row: jump up to its group header.
@@ -1387,6 +1396,31 @@ mod tests {
     }
 
     #[test]
+    fn stale_group_index_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("alpha");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "init"])
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
+            .status().unwrap();
+        let roots = vec![tmp.path().to_path_buf()];
+        let mut state = initial_state(roots.clone()).unwrap();
+        // Stale selection pointing past the rebuilt group list.
+        state.selected_in_view = Some((999, None));
+        // Render-path helper must refuse the out-of-range index (no panic).
+        assert_eq!(current_selected_is_group_header(&state), None);
+        // A refresh must reconcile the stale index to something valid (or None).
+        refresh_in_place(&mut state, roots).unwrap();
+        if let Some((gi, _)) = state.selected_in_view {
+            assert!(gi < state.session_groups.len(), "reconciled index in range");
+        }
+    }
+
+    #[test]
     fn refresh_preserves_user_state() {
         // Build a temp project root with one real repo so initial_state +
         // refresh_in_place can both run.
@@ -1598,7 +1632,9 @@ fn current_session_in_view<'a>(state: &'a AppState) -> Option<&'a Session> {
 /// True iff the user has a group header (not a session) selected.
 fn current_selected_is_group_header(state: &AppState) -> Option<usize> {
     match state.selected_in_view {
-        Some((gi, None)) => Some(gi),
+        // Bounds-check: a stale index left over from a shrunk group list must
+        // not reach the `session_groups[gi]` indexes on the render path.
+        Some((gi, None)) if gi < state.session_groups.len() => Some(gi),
         _ => None,
     }
 }

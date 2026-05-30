@@ -1,6 +1,22 @@
 use anyhow::Result;
 use base64::Engine;
 
+/// Shell-quote a path for the emitted `cd <path> && claude` command. Plain
+/// paths stay bare; anything with shell metacharacters is single-quoted so a
+/// worktree path with spaces/specials can't break or inject into the command.
+fn shell_quote(s: &str) -> String {
+    let safe = !s.is_empty()
+        && s.chars().all(|c| {
+            c.is_alphanumeric()
+                || matches!(c, '/' | '_' | '-' | '.' | '+' | '~' | ',' | ':' | '@' | '%')
+        });
+    if safe {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
 /// Encode a string as an OSC 52 escape sequence: `\x1b]52;c;<base64>\x07`
 pub fn osc52_encode(s: &str) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(s);
@@ -12,7 +28,7 @@ pub fn launch_command_for(
     resume_id: Option<&str>,
     dangerous: bool,
 ) -> String {
-    let cwd_display = cwd.to_string_lossy();
+    let cwd_display = shell_quote(&cwd.to_string_lossy());
     let dangerous_flag = if dangerous {
         " --dangerously-skip-permissions"
     } else {
@@ -78,5 +94,11 @@ mod tests {
             s,
             "cd /p/x && claude --resume zzz-1 --dangerously-skip-permissions"
         );
+    }
+
+    #[test]
+    fn launch_command_quotes_path_with_spaces() {
+        let s = launch_command_for(Path::new("/home/jane/My Repo"), Some("id1"), false);
+        assert_eq!(s, "cd '/home/jane/My Repo' && claude --resume id1");
     }
 }
