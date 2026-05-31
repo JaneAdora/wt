@@ -1231,7 +1231,7 @@ mod tests {
     use crate::model::{JobStatus, Project, Session, SessionState, SessionWindow, Worktree};
     use std::collections::HashSet;
     use std::path::PathBuf;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn fixture_state() -> AppState {
         let now = std::time::SystemTime::now();
