@@ -690,7 +690,7 @@ fn handle_key(
                 // Copy first (best-effort; OSC 52 isn't honoured by all
                 // terminals). Then print to stdout and exit so the user
                 // has the command both ways.
-                let _ = actions::copy_to_clipboard(&cmd);
+                suite_term::clipboard::emit_osc52(&cmd);
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
             }
             Ok(None)
@@ -699,7 +699,7 @@ fn handle_key(
         // rather forgive that than make the user retype.
         (KeyCode::Char('d') | KeyCode::Char('D'), _) => {
             if let Some(cmd) = launch_for_selected(state, true) {
-                let _ = actions::copy_to_clipboard(&cmd);
+                suite_term::clipboard::emit_osc52(&cmd);
                 return Ok(Some(RunOutcome::PrintAndExit(cmd)));
             }
             Ok(None)
@@ -1673,7 +1673,7 @@ fn move_session_selection(state: &mut AppState, delta: i32) {
 
 fn copy_current(state: &mut AppState, dangerous: bool) -> Result<()> {
     if let Some(cmd) = launch_for_selected(state, dangerous) {
-        actions::copy_to_clipboard(&cmd)?;
+        suite_term::clipboard::emit_osc52(&cmd);
         let msg = if dangerous { "copied (dangerous)" } else { "copied" };
         state.status.say(msg);
     } else {

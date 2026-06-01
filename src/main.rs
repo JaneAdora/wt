@@ -56,6 +56,11 @@ fn main() -> Result<()> {
     let mut state = app::initial_state(roots)?;
     let mut ui_state = app::UiState::new();
 
+    // Install BEFORE terminal setup so a panic during setup still restores
+    // the terminal (leaves the alt screen / disables raw mode) before the
+    // default hook prints the message.
+    suite_term::panic::install_panic_hook();
+
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(

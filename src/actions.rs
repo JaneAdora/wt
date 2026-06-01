@@ -1,27 +1,4 @@
-use anyhow::Result;
-use base64::Engine;
-
-/// Shell-quote a path for the emitted `cd <path> && claude` command. Plain
-/// paths stay bare; anything with shell metacharacters is single-quoted so a
-/// worktree path with spaces/specials can't break or inject into the command.
-fn shell_quote(s: &str) -> String {
-    let safe = !s.is_empty()
-        && s.chars().all(|c| {
-            c.is_alphanumeric()
-                || matches!(c, '/' | '_' | '-' | '.' | '+' | '~' | ',' | ':' | '@' | '%')
-        });
-    if safe {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
-
-/// Encode a string as an OSC 52 escape sequence: `\x1b]52;c;<base64>\x07`
-pub fn osc52_encode(s: &str) -> String {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(s);
-    format!("\x1b]52;c;{b64}\x07")
-}
+use suite_term::quote::shell_quote;
 
 pub fn launch_command_for(
     cwd: &std::path::Path,
@@ -35,35 +12,18 @@ pub fn launch_command_for(
         ""
     };
     match resume_id {
-        Some(id) => format!("cd {cwd_display} && claude --resume {id}{dangerous_flag}"),
+        Some(id) => {
+            let id_quoted = shell_quote(id);
+            format!("cd {cwd_display} && claude --resume {id_quoted}{dangerous_flag}")
+        }
         None => format!("cd {cwd_display} && claude{dangerous_flag}"),
     }
-}
-
-/// Write the OSC 52 sequence to stdout. The terminal honors or drops it.
-pub fn copy_to_clipboard(s: &str) -> Result<()> {
-    use std::io::Write;
-    let seq = osc52_encode(s);
-    let mut stdout = std::io::stdout().lock();
-    stdout.write_all(seq.as_bytes())?;
-    stdout.flush()?;
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
-
-    #[test]
-    fn osc52_encodes_with_correct_envelope() {
-        let out = osc52_encode("hello");
-        assert!(out.starts_with("\x1b]52;c;"));
-        assert!(out.ends_with('\x07'));
-        let body = &out[7..out.len() - 1];
-        let decoded = base64::engine::general_purpose::STANDARD.decode(body).unwrap();
-        assert_eq!(decoded, b"hello");
-    }
 
     #[test]
     fn launch_command_no_resume() {
@@ -100,5 +60,11 @@ mod tests {
     fn launch_command_quotes_path_with_spaces() {
         let s = launch_command_for(Path::new("/home/jane/My Repo"), Some("id1"), false);
         assert_eq!(s, "cd '/home/jane/My Repo' && claude --resume id1");
+    }
+
+    #[test]
+    fn launch_command_quotes_resume_id_with_metachar() {
+        let s = launch_command_for(Path::new("/p"), Some("a;b"), false);
+        assert_eq!(s, "cd /p && claude --resume 'a;b'");
     }
 }
